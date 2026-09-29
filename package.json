@@ -1,0 +1,14 @@
+{
+  "name": "dc-geomap",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "build": "pnpm --recursive build",
+    "dev": "pnpm --parallel --filter @dc-geomap/web --filter @dc-geomap/api dev",
+    "lint": "pnpm --recursive lint",
+    "test": "pnpm --recursive test",
+    "test:worker": "python -m unittest discover -s services/worker -p 'test_*.py'",
+    "test:all": "pnpm test && pnpm test:worker"
+  }
+}

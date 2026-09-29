@@ -1,0 +1,89 @@
+name: dc-geomap
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+    environment:
+      API_BIND: 0.0.0.0
+      API_PORT: 8080
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN}
+      KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:?Set KEYCLOAK_BASE_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?Set KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-dcgeomaps}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?Set KEYCLOAK_CLIENT_SECRET}
+      KEYCLOAK_ALLOW_HTTP: ${KEYCLOAK_ALLOW_HTTP:-false}
+      KEYCLOAK_REQUIRED_ROLE: ${KEYCLOAK_REQUIRED_ROLE:-role_dcgeomaps_admin}
+      WORKER_URL: http://worker:8788
+      WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:?Set WORKER_SHARED_SECRET}
+      BASEMAP_MANIFEST_URL: ${BASEMAP_MANIFEST_URL:-/basemap/active.json}
+    depends_on:
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      WORKER_BIND: 0.0.0.0
+      WORKER_PORT: 8788
+      WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:?Set WORKER_SHARED_SECRET}
+      OSM_PBF_URL: ${OSM_PBF_URL:-https://download.geofabrik.de/asia/philippines-latest.osm.pbf}
+      OSM_CHECKSUM_URL: ${OSM_CHECKSUM_URL:-https://download.geofabrik.de/asia/philippines-latest.osm.pbf.md5}
+      CADDY_INTERNAL_URL: http://web
+      TZ: ${TZ:-Asia/Manila}
+      DAILY_UPDATE_HOUR: ${DAILY_UPDATE_HOUR:-2}
+      MONTHLY_REBUILD_HOUR: ${MONTHLY_REBUILD_HOUR:-1}
+      UPDATE_CHECK_INTERVAL_SECONDS: ${UPDATE_CHECK_INTERVAL_SECONDS:-60}
+      PLANETILER_JAVA_OPTS: ${PLANETILER_JAVA_OPTS:--Xmx8g}
+      PLANETILER_THREADS: ${PLANETILER_THREADS:-4}
+      PLANETILER_MAX_ZOOM: ${PLANETILER_MAX_ZOOM:-15}
+      MIN_FREE_DISK_GB: ${MIN_FREE_DISK_GB:-25}
+      DATA_ROOT: /data
+    volumes:
+      - basemap_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
+      BASEMAP_ALLOWED_ORIGIN: ${BASEMAP_ALLOWED_ORIGIN:-http://localhost:8080}
+    ports:
+      # Either published host port can be changed without changing Caddy's
+      # internal listeners. For example WEB_PORT=8180 publishes host 8180.
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80"
+      - "${WEB_BIND:-127.0.0.1}:${WEB_HTTPS_PORT:-8443}:443"
+    volumes:
+      - basemap_data:/basemap-data:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  basemap_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,51 @@
+{$CADDY_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	}
+
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle /health {
+		reverse_proxy api:8080
+	}
+
+	handle_path /basemap/* {
+		root * /basemap-data/public
+		header Access-Control-Allow-Origin "{$BASEMAP_ALLOWED_ORIGIN}"
+		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		header Access-Control-Allow-Headers "Range, If-Match, If-None-Match"
+		header Access-Control-Expose-Headers "Accept-Ranges, Content-Length, Content-Range, ETag, Last-Modified"
+
+		@preflight method OPTIONS
+		respond @preflight 204
+
+		@manifest path /active.json /health.json
+		header @manifest Cache-Control "no-cache, no-store, must-revalidate"
+
+		@archive path *.pmtiles
+		header @archive Cache-Control "public, max-age=31536000, immutable"
+		header @archive Content-Type "application/vnd.pmtiles"
+
+		# Directory browsing is disabled unless the browse option is explicitly enabled.
+		file_server
+	}
+
+	handle {
+		root * /srv
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@entry path / /index.html
+		header @entry Cache-Control "no-store"
+		try_files {path} /index.html
+		file_server
+	}
+}

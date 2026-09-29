@@ -1,0 +1,72 @@
+import { useEffect, useRef, useState } from "react";
+import * as maplibregl from "maplibre-gl";
+import { Protocol } from "pmtiles";
+import { basemapStyle } from "./basemap-style";
+import type { BasemapVersion } from "./types";
+
+const protocol = new Protocol();
+let registered = false;
+
+export function MapPreview({ active }: { active: BasemapVersion | null }) {
+  const container = useRef<HTMLDivElement>(null);
+  const map = useRef<maplibregl.Map | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!active || !container.current) return;
+    if (!registered) {
+      maplibregl.addProtocol("pmtiles", protocol.tile);
+      registered = true;
+    }
+    setWarning(null);
+    const instance = new maplibregl.Map({
+      container: container.current,
+      style: basemapStyle(active.url),
+      center: [122.2, 12.4],
+      zoom: 4.7,
+      minZoom: 3,
+      maxZoom: 22,
+      attributionControl: false,
+      cooperativeGestures: true,
+      fadeDuration: 0,
+    });
+    map.current = instance;
+    instance.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    instance.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    instance.on("error", (event: maplibregl.ErrorEvent) => {
+      const message = event.error?.message || "The active basemap could not be displayed.";
+      setWarning(message);
+    });
+    return () => {
+      instance.remove();
+      map.current = null;
+    };
+  }, [active?.url]);
+
+  if (!active) {
+    return (
+      <div className="map-empty">
+        <div className="archipelago-mark" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
+        <p className="eyebrow">MAP PREVIEW</p>
+        <h3>Ready for the first build</h3>
+        <p>No external tiles are used. Start a full build when the host has enough free disk space.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="map-shell">
+      <div ref={container} className="map-canvas" />
+      <div className="map-version">
+        <span>LIVE</span>
+        <strong>{active.version}</strong>
+        <small>native z15 · overzoom to z22</small>
+      </div>
+      {warning && <div className="map-warning">Basemap warning: {warning}</div>}
+    </div>
+  );
+}

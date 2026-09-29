@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+.DS_Store
+basemap-data/
