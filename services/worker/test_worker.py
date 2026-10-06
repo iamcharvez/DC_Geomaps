@@ -16,6 +16,7 @@ from worker import (
     first_sunday,
     java_heap_bytes,
     next_schedules,
+    pmtiles_max_zoom,
     xyz,
 )
 
@@ -83,6 +84,17 @@ class WorkerTests(unittest.TestCase):
     def test_java_heap_parser(self):
         self.assertEqual(java_heap_bytes("-XX:+UseG1GC -Xmx2g"), 2 * 1024**3)
         self.assertEqual(java_heap_bytes("-Xmx768m"), 768 * 1024**2)
+
+    def test_pmtiles_max_zoom_accepts_cli_header_key(self):
+        self.assertEqual(pmtiles_max_zoom({"maxzoom": 15}), 15)
+
+    def test_pmtiles_max_zoom_accepts_legacy_key_variants(self):
+        self.assertEqual(pmtiles_max_zoom({"max_zoom": 15}), 15)
+        self.assertEqual(pmtiles_max_zoom({"maxZoom": "15"}), 15)
+
+    def test_pmtiles_max_zoom_reports_missing_header_field(self):
+        with self.assertRaisesRegex(UpdateFailure, "missing the maxzoom field"):
+            pmtiles_max_zoom({"minzoom": 0})
 
     def test_download_resumes_existing_partial_with_range(self):
         payload = (b"philippines-osm" * 1024) + b"end"

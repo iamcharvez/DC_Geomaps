@@ -124,6 +124,23 @@ class UpdateFailure(RuntimeError):
     pass
 
 
+def pmtiles_max_zoom(metadata: Any) -> int:
+    if not isinstance(metadata, dict):
+        raise UpdateFailure("PMTiles header output was not a JSON object.")
+    for key in ("maxzoom", "max_zoom", "maxZoom"):
+        value = metadata.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise UpdateFailure(f"PMTiles header field {key} is not a valid zoom level: {value!r}.") from None
+        if isinstance(value, float) and not value.is_integer():
+            raise UpdateFailure(f"PMTiles header field {key} is not a valid zoom level: {value!r}.")
+        return parsed
+    raise UpdateFailure("PMTiles header is missing the maxzoom field.")
+
+
 class ChecksumMismatch(UpdateFailure):
     pass
 
@@ -999,8 +1016,8 @@ class BasemapController:
             check=True,
         )
         metadata = json.loads(header.stdout)
-        maximum = metadata.get("max_zoom", metadata.get("maxZoom"))
-        if int(maximum) != self.settings.max_zoom:
+        maximum = pmtiles_max_zoom(metadata)
+        if maximum != self.settings.max_zoom:
             raise UpdateFailure(f"PMTiles max zoom is {maximum}; expected {self.settings.max_zoom}.")
         for region, (longitude, latitude) in PHILIPPINES_SAMPLES.items():
             for zoom in (5, 10, self.settings.max_zoom):
