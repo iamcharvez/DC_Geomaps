@@ -40,7 +40,10 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .glow-two { width: 320px; height: 320px; right: -120px; top: -150px; background: rgba(71,208,170,.1); box-shadow: 0 0 100px rgba(71,208,170,.16); }
 .login-panel { width: min(370px, 100%); }
 .login-card { border: 1px solid rgba(187,229,216,.22); border-radius: 22px; background: rgba(248,252,250,.96); backdrop-filter: blur(24px); padding: 32px; box-shadow: 0 32px 90px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.9); }
-.login-heading { margin: 0 0 25px; text-align: center; }
+.login-title-brand { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--ink); }
+.login-title-brand .logo-mark { width: 34px; height: 34px; border-radius: 10px; font-size: 10px; box-shadow: 0 8px 20px rgba(19,142,111,.2); }
+.login-title-brand strong { font-size: 15px; letter-spacing: -.01em; }
+.login-heading { margin: 24px 0 25px; text-align: center; }
 .login-heading h1 { margin: 0; color: var(--ink); font: 800 28px/1 inherit; letter-spacing: -.04em; }
 .login-card form { display: grid; gap: 13px; }
 .login-card label { display: block; }

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { Integrations } from "./Integrations";
+import { resourceSafety } from "./status-compat";
 import type { AuditEvent, BasemapStatus, User } from "./types";
 
 const MapPreview = lazy(() =>
@@ -99,7 +100,8 @@ export function Dashboard({
   const diskPercent = status ? Math.round((status.disk.used / status.disk.total) * 100) : 0;
   const initials = user.username.slice(0, 2).toUpperCase();
   const healthy = !!status && status.service === "healthy";
-  const resourcesSafe = status?.resources.safe ?? true;
+  const resources = status?.resources;
+  const resourcesSafe = resourceSafety(resources);
 
   const run = async (action: string) => {
     const dangerous = action === "rebuild" || action === "rollback";
@@ -177,7 +179,7 @@ export function Dashboard({
               </article>
               <article className="metric-card"><span className="metric-icon">◇</span><div><small>OSM SNAPSHOT</small><strong>{status?.active?.osm_timestamp?.slice(0, 10) || "—"}</strong><p>{status?.source ? `${status.source.mode} source` : "No source installed"}</p></div></article>
               <article className="metric-card"><span className="metric-icon">≋</span><div><small>ARCHIVE SIZE</small><strong>{bytes(status?.active?.archive_size)}</strong><p>PMTiles · native z{status?.native_max_zoom ?? 15}</p></div></article>
-              <article className="metric-card"><span className="metric-icon">◫</span><div><small>FREE DISK</small><strong>{bytes(status?.disk.free)}</strong><p>{diskPercent}% used · {bytes(status?.resources.disk_required_free)} safety requirement</p></div></article>
+              <article className="metric-card"><span className="metric-icon">◫</span><div><small>FREE DISK</small><strong>{bytes(status?.disk.free)}</strong><p>{diskPercent}% used{resources ? ` · ${bytes(resources.disk_required_free)} safety requirement` : ""}</p></div></article>
             </section>
 
             <section className="main-grid">
@@ -190,11 +192,11 @@ export function Dashboard({
 
               <aside className="panel operations-panel">
                 <header><div><p className="eyebrow">CONTROL PLANE</p><h2>Operations</h2></div><span className="lock-badge">◆ ADMIN</span></header>
-                {status && (
+                {status && resources && (
                   <div className={`resource-status ${resourcesSafe ? "safe" : "warning"}`}>
-                    <div><span>Memory available</span><strong>{bytes(status.resources.memory_available || Number.NaN)}</strong><small>{bytes(status.resources.java_heap)} Java heap</small></div>
-                    <div><span>Disk headroom</span><strong>{bytes(Math.max(0, status.disk.free - status.resources.disk_required_free))}</strong><small>{bytes(status.resources.disk_required_free)} required</small></div>
-                    <b>{resourcesSafe ? "Safety checks passed" : `Blocked: ${status.resources.warnings.join(", ")}`}</b>
+                    <div><span>Memory available</span><strong>{bytes(resources.memory_available || Number.NaN)}</strong><small>{bytes(resources.java_heap)} Java heap</small></div>
+                    <div><span>Disk headroom</span><strong>{bytes(Math.max(0, status.disk.free - resources.disk_required_free))}</strong><small>{bytes(resources.disk_required_free)} required</small></div>
+                    <b>{resourcesSafe ? "Safety checks passed" : `Blocked: ${resources.warnings.join(", ")}`}</b>
                   </div>
                 )}
                 {!busy && status?.schedule.retry && (

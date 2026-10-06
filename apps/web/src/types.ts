@@ -65,7 +65,7 @@ export type BasemapStatus = {
     resolved_by?: string;
   } | null;
   disk: { total: number; used: number; free: number };
-  resources: {
+  resources?: {
     safe: boolean;
     warnings: string[];
     disk_required_free: number;

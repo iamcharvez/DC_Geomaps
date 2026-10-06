@@ -27,6 +27,10 @@ export function Login({
       </div>
       <section className="login-panel">
         <div className="login-card">
+          <div className="login-title-brand">
+            <span className="logo-mark" aria-hidden="true">DC</span>
+            <strong>DC Geomaps</strong>
+          </div>
           <div className="login-heading">
             <h1>Sign in</h1>
           </div>
