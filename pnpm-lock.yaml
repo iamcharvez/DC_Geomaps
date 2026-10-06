@@ -39,6 +39,9 @@ importers:
         specifier: 19.3.0
         version: 19.3.0(react@19.3.0)
     devDependencies:
+      '@maplibre/maplibre-gl-style-spec':
+        specifier: 26.4.4
+        version: 26.4.4
       '@types/react':
         specifier: 19.2.8
         version: 19.2.8

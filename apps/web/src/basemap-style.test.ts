@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { validateStyleMin } from "@maplibre/maplibre-gl-style-spec";
 import { basemapStyle } from "./basemap-style";
 
 describe("basemap style", () => {
@@ -21,5 +22,12 @@ describe("basemap style", () => {
     );
     expect(serialized).toContain("OpenStreetMap contributors");
     expect(serialized).not.toContain("tile.openstreetmap.org");
+  });
+
+  it("is accepted by MapLibre's style validator", () => {
+    const errors = validateStyleMin(
+      basemapStyle("/basemap/current.pmtiles", "https://maps.example.test/"),
+    );
+    expect(errors.map((error) => error.message)).toEqual([]);
   });
 });

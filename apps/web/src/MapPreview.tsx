@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { Protocol } from "pmtiles";
 import { basemapStyle } from "./basemap-style";
 import { authenticatedPmtiles } from "./pmtiles-source";
@@ -7,6 +8,12 @@ import type { BasemapStatus, BasemapVersion } from "./types";
 
 const protocol = new Protocol();
 let registered = false;
+
+// MapLibre 6 ships its parser as a separate module worker. Vite bundles this
+// explicit worker entry and gives it a stable same-origin URL; relying on
+// MapLibre's import.meta.url fallback points at a non-existent sibling of the
+// lazy MapPreview chunk in production.
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 export function MapPreview({ active, job, token }: { active: BasemapVersion | null; job?: BasemapStatus["job"]; token: string }) {
   const container = useRef<HTMLDivElement>(null);
