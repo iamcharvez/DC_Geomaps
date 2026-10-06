@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import { basemapStyle } from "./basemap-style";
-import type { BasemapVersion } from "./types";
+import type { BasemapStatus, BasemapVersion } from "./types";
 
 const protocol = new Protocol();
 let registered = false;
 
-export function MapPreview({ active }: { active: BasemapVersion | null }) {
+export function MapPreview({ active, job }: { active: BasemapVersion | null; job?: BasemapStatus["job"] }) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -44,6 +44,7 @@ export function MapPreview({ active }: { active: BasemapVersion | null }) {
   }, [active?.url]);
 
   if (!active) {
+    const building = job && job.status !== "idle";
     return (
       <div className="map-empty">
         <div className="archipelago-mark" aria-hidden="true">
@@ -52,8 +53,10 @@ export function MapPreview({ active }: { active: BasemapVersion | null }) {
           <i />
         </div>
         <p className="eyebrow">MAP PREVIEW</p>
-        <h3>Ready for the first build</h3>
-        <p>No external tiles are used. Start a full build when the host has enough free disk space.</p>
+        <h3>{building ? "Building the first basemap" : "Ready for the first build"}</h3>
+        <p>{building
+          ? `${job.message} (${job.progress}%). The build continues if this page is closed.`
+          : "No external tiles are used. Start a full build when the host has enough free disk space."}</p>
       </div>
     );
   }

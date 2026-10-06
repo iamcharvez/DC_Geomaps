@@ -10,6 +10,20 @@
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
+	# Public, read-only discovery and MapLibre style endpoints for other apps.
+	# This route never exposes the protected basemap operations API.
+	handle /api/v1/integration* {
+		header Access-Control-Allow-Origin "{$INTEGRATION_ALLOWED_ORIGIN:*}"
+		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		header Access-Control-Allow-Headers "Accept, Content-Type"
+		header Access-Control-Max-Age "86400"
+
+		@preflight method OPTIONS
+		respond @preflight 204
+
+		reverse_proxy api:8080
+	}
+
 	handle /api/* {
 		reverse_proxy api:8080
 	}
@@ -20,7 +34,7 @@
 
 	handle_path /basemap/* {
 		root * /basemap-data/public
-		header Access-Control-Allow-Origin "{$BASEMAP_ALLOWED_ORIGIN}"
+		header Access-Control-Allow-Origin "{$BASEMAP_ALLOWED_ORIGIN:*}"
 		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
 		header Access-Control-Allow-Headers "Range, If-Match, If-None-Match"
 		header Access-Control-Expose-Headers "Accept-Ranges, Content-Length, Content-Range, ETag, Last-Modified"

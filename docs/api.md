@@ -8,6 +8,56 @@ All JSON responses use UTF-8. Protected endpoints require `Authorization: Bearer
 
 The worker API is intentionally undocumented as a public interface and is reachable only inside Compose.
 
+## Public map integration
+
+These read-only endpoints do not require Keycloak authentication. Their CORS
+policy is independent of the protected administrative API.
+
+### `GET /api/v1/integration`
+
+Returns the stable v1 discovery contract for another application. URLs are
+absolute and are derived from `APP_ORIGIN`:
+
+```json
+{
+  "api_version": "v1",
+  "name": "DC Geomap Philippines Basemap",
+  "status": "ready",
+  "coverage": "Philippines",
+  "format": "PMTiles",
+  "vector_schema": "OpenMapTiles",
+  "native_max_zoom": 15,
+  "display_max_zoom": 22,
+  "manifest_url": "https://maps.example.test/basemap/active.json",
+  "style_url": "https://maps.example.test/api/v1/integration/style.json",
+  "active": {
+    "version": "2026-10-06-abc123",
+    "pmtiles_url": "https://maps.example.test/basemap/philippines-2026-10-06-abc123.pmtiles",
+    "osm_timestamp": "2026-10-06T00:00:00Z",
+    "archive_size": 123456789,
+    "native_max_zoom": 15,
+    "activated_at": "2026-10-06T02:00:00Z",
+    "checksums": {
+      "source_sha256": "...",
+      "pmtiles_sha256": "..."
+    }
+  },
+  "build": null
+}
+```
+
+Before the initial build completes, `active` is `null`, `status` is `building`
+or `waiting_for_initial_build`, and `build` contains safe progress fields.
+Private paths, logs, failures, resource telemetry, credentials, and operations
+are never included.
+
+### `GET /api/v1/integration/style.json`
+
+Returns a MapLibre Style Specification v8 document whose vector source points
+to the immutable active archive using the `pmtiles://` protocol. The source has
+native `maxzoom: 15`; a MapLibre map may set `maxZoom: 22` for vector overzoom.
+Returns 503 with `basemap_not_ready` until the first archive is active.
+
 ## Health and authentication
 
 ### `GET /health`
@@ -48,7 +98,7 @@ Protected. Returns the relative manifest URL and native/display maximum zooms. P
 
 ### `GET /api/v1/basemap/status`
 
-Protected. Returns service health, active and previous manifests, source state, current job/progress, last check/success/failure, disk capacity, schedule, and zoom limits.
+Protected. Returns service health, active and previous manifests, source state, transfer speed/ETA/retry progress, last check/success/failure and resolution, memory/disk safety telemetry, schedule/retry state, and zoom limits.
 
 ### `GET /api/v1/basemap/logs?tail=300`
 
@@ -96,4 +146,4 @@ Safe serving status without paths, checksums, logs, or credentials.
 
 ### `GET|HEAD /basemap/philippines-<version>.pmtiles`
 
-Immutable PMTiles archive. Supports byte ranges, ETag, and Last-Modified through Caddy. CORS is restricted to `BASEMAP_ALLOWED_ORIGIN`. Directory listing is disabled.
+Immutable PMTiles archive. Supports byte ranges, ETag, and Last-Modified through Caddy. Browser CORS uses `BASEMAP_ALLOWED_ORIGIN`; use `*` for multiple credential-free consumers or one exact origin for a single consumer. Directory listing is disabled.

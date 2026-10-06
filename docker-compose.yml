@@ -1,5 +1,11 @@
 name: dc-geomap
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+    max-file: "${DOCKER_LOG_MAX_FILES:-3}"
+
 services:
   api:
     build:
@@ -27,6 +33,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
   worker:
     build:
@@ -47,6 +54,16 @@ services:
       PLANETILER_THREADS: ${PLANETILER_THREADS:-4}
       PLANETILER_MAX_ZOOM: ${PLANETILER_MAX_ZOOM:-15}
       MIN_FREE_DISK_GB: ${MIN_FREE_DISK_GB:-25}
+      DOWNLOAD_RETRIES: ${DOWNLOAD_RETRIES:-5}
+      DOWNLOAD_RETRY_BASE_SECONDS: ${DOWNLOAD_RETRY_BASE_SECONDS:-5}
+      DOWNLOAD_TIMEOUT_SECONDS: ${DOWNLOAD_TIMEOUT_SECONDS:-120}
+      SCHEDULED_RETRY_MINUTES: ${SCHEDULED_RETRY_MINUTES:-30}
+      SCHEDULED_RETRY_MAX_ATTEMPTS: ${SCHEDULED_RETRY_MAX_ATTEMPTS:-5}
+      DISK_WORKING_MULTIPLIER: ${DISK_WORKING_MULTIPLIER:-8}
+      MEMORY_RESERVE_MB: ${MEMORY_RESERVE_MB:-512}
+      MIN_AVAILABLE_MEMORY_MB: ${MIN_AVAILABLE_MEMORY_MB:-256}
+      WORKER_LOG_MAX_MB: ${WORKER_LOG_MAX_MB:-50}
+      WORKER_LOG_BACKUPS: ${WORKER_LOG_BACKUPS:-3}
       DATA_ROOT: /data
     volumes:
       - basemap_data:/data
@@ -56,6 +73,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
   web:
     build:
@@ -63,7 +81,9 @@ services:
       dockerfile: infrastructure/docker/web.Dockerfile
     environment:
       CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
-      BASEMAP_ALLOWED_ORIGIN: ${BASEMAP_ALLOWED_ORIGIN:-http://localhost:8080}
+      # These public, credential-free resources may be consumed by multiple apps.
+      BASEMAP_ALLOWED_ORIGIN: ${BASEMAP_ALLOWED_ORIGIN:-*}
+      INTEGRATION_ALLOWED_ORIGIN: ${INTEGRATION_ALLOWED_ORIGIN:-*}
     ports:
       # Either published host port can be changed without changing Caddy's
       # internal listeners. For example WEB_PORT=8180 publishes host 8180.
@@ -82,6 +102,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   basemap_data:

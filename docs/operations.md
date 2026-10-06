@@ -10,7 +10,8 @@ CADDY_SITE_ADDRESS=:80
 WEB_BIND=0.0.0.0
 WEB_PORT=8180
 APP_ORIGIN=http://server-address:8180
-BASEMAP_ALLOWED_ORIGIN=http://server-address:8180
+BASEMAP_ALLOWED_ORIGIN=*
+INTEGRATION_ALLOWED_ORIGIN=*
 ```
 
 Do not change `CADDY_SITE_ADDRESS` to `:8180` for this arrangement: 8180 is the
@@ -32,8 +33,9 @@ The worker uses the `Asia/Manila` timezone by default:
 
 - Daily at 02:00: compare Geofabrik metadata. If unchanged, skip. If changed and an installed PBF exists, copy it to staging and run `pyosmium-up-to-date`; otherwise perform a full download.
 - First Sunday monthly at 01:00: force a new full download and build even if the checksum is unchanged.
+- A failed scheduled operation retries after `SCHEDULED_RETRY_MINUTES` (30 by default), up to `SCHEDULED_RETRY_MAX_ATTEMPTS` (five by default). A manual cancellation is never automatically restarted.
 
-If another operation is active, the scheduler keeps retrying its due job rather than starting concurrently. After a scheduled job is accepted it is recorded so it does not run twice that day/month.
+If another operation is active, the scheduler waits rather than starting concurrently. Scheduled retry state is persisted across worker restarts and displayed in the admin UI.
 
 Change `TZ`, `DAILY_UPDATE_HOUR`, or `MONTHLY_REBUILD_HOUR` and recreate the worker container to alter the schedule.
 
@@ -60,9 +62,10 @@ Do not run `docker compose down -v` unless intentionally deleting every source, 
 
 - `/health` checks the API.
 - `/basemap/health.json` is a safe unauthenticated serving-status document.
-- The admin UI shows worker state, active/previous versions, timestamps, checksums, archive size, disk usage, progress, schedules, and recent failures.
-- `docker compose logs --tail=200 api worker web` captures container diagnostics.
-- Detailed build output is stored in the basemap volume and available in **Build logs**.
+- The admin UI shows worker state, active/previous versions, timestamps, checksums, archive size, transfer speed, ETA, retry attempts, memory/disk headroom, schedules, and failure resolution.
+- `docker compose logs --tail=200 api worker web` captures worker lifecycle and Planetiler output. Routine health/status polling is intentionally suppressed.
+- Docker JSON logs rotate according to `DOCKER_LOG_MAX_SIZE` and `DOCKER_LOG_MAX_FILES`.
+- Detailed build output is also stored in `/data/logs/worker.log`, rotated according to `WORKER_LOG_MAX_MB` and `WORKER_LOG_BACKUPS`, and available in **Build logs**.
 
 ## Changing maximum native zoom
 
@@ -70,8 +73,10 @@ The requested production value is enforced as 15. To intentionally change it, up
 
 ## Troubleshooting
 
-- **Insufficient disk:** free storage or increase the volume before retrying. Lowering the safety floor does not reduce Planetiler's actual requirements.
-- **Checksum mismatch:** the partial file is deleted. Retry after Geofabrik finishes publishing or network stability returns.
+- **Insufficient disk:** free storage or increase the volume before retrying. Preflight uses the larger of `MIN_FREE_DISK_GB` and the remote PBF size multiplied by `DISK_WORKING_MULTIPLIER`. Lowering the floor does not reduce Planetiler's actual requirements.
+- **Unsafe memory:** reduce `PLANETILER_JAVA_OPTS`, stop competing workloads, or increase RAM. The heap plus `MEMORY_RESERVE_MB` must fit the detected host/container limit, and at least `MIN_AVAILABLE_MEMORY_MB` must be free before work starts.
+- **Network interruption:** metadata and PBF requests retry automatically. A partial PBF is retained and resumed with HTTP Range on the next attempt or operation.
+- **Checksum mismatch:** the invalid partial is deleted and a clean bounded retry is attempted.
 - **Replication failure:** use **Force full rebuild** to re-establish a current canonical PBF.
 - **Planetiler failure:** inspect build logs for JVM memory, disk, or upstream supporting-data errors. The current basemap remains active.
 - **Range failure:** verify Caddy serves the volume and no upstream proxy strips the `Range` header or converts 206 to 200.

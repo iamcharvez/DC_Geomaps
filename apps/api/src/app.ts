@@ -8,6 +8,11 @@ import {
   verifyAdminToken,
   type AdminIdentity,
 } from "./keycloak.js";
+import {
+  integrationDocument,
+  integrationStyle,
+  type WorkerIntegrationStatus,
+} from "./integration.js";
 import { WorkerError, workerRequest } from "./worker-client.js";
 
 declare module "fastify" {
@@ -60,6 +65,25 @@ export function buildApp(config: Config) {
   };
 
   app.get("/health", async () => ({ status: "ok", service: "dc-geomap-api" }));
+  app.get("/api/v1/integration", async (_request, reply) => {
+    const status = await workerRequest<WorkerIntegrationStatus>(config, "/v1/status");
+    reply.header("cache-control", "public, max-age=30");
+    return integrationDocument(config, status);
+  });
+  app.get("/api/v1/integration/style.json", async (_request, reply) => {
+    const status = await workerRequest<WorkerIntegrationStatus>(config, "/v1/status");
+    const style = integrationStyle(config, status);
+    if (!style) {
+      return error(
+        reply,
+        503,
+        "basemap_not_ready",
+        "The first Philippines basemap build has not been published yet.",
+      );
+    }
+    reply.header("cache-control", "public, max-age=30");
+    return style;
+  });
   app.get("/api/v1/auth/config", async () => ({
     enabled: true,
     required_role: config.keycloakRequiredRole,

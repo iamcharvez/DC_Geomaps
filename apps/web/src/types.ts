@@ -37,18 +37,60 @@ export type BasemapStatus = {
     progress: number;
     message: string;
     started_at: string | null;
+    updated_at: string;
     cancel_requested: boolean;
+    bytes_downloaded: number;
+    bytes_total: number;
+    bytes_per_second: number;
+    eta_seconds: number | null;
+    attempt: number | null;
+    max_attempts: number | null;
+    resumed: boolean;
+    scheduled_kind: string | null;
+    scheduled_key: string | null;
+    scheduled_attempt: number | null;
   };
-  last_check: { checksum_md5: string; last_modified: string; checked_at: string } | null;
+  last_check: { checksum_md5: string; last_modified: string; content_length: number; checked_at: string } | null;
   last_success: { at: string; action: string; version: string } | null;
-  last_failure: { at: string; message: string; cancelled?: boolean } | null;
+  last_failure: {
+    at: string;
+    message: string;
+    category?: string;
+    action?: string;
+    stage?: string;
+    cancelled?: boolean;
+    retry_at?: string | null;
+    retry_exhausted?: boolean;
+    resolved_at?: string;
+    resolved_by?: string;
+  } | null;
   disk: { total: number; used: number; free: number };
+  resources: {
+    safe: boolean;
+    warnings: string[];
+    disk_required_free: number;
+    disk_configured_floor: number;
+    memory_total: number;
+    memory_available: number;
+    java_heap: number;
+    memory_reserve: number;
+    minimum_available_memory: number;
+  };
   schedule: {
     timezone: string;
     daily_incremental: string;
     monthly_full: string;
     next_daily: string;
     next_monthly: string;
+    retry: {
+      kind: string;
+      key: string;
+      action: string;
+      attempt: number;
+      max_attempts: number;
+      due_at: string;
+      last_error: string;
+    } | null;
   };
   native_max_zoom: number;
   display_max_zoom: number;
@@ -61,4 +103,3 @@ export type AuditEvent = {
   outcome: string;
   detail: string;
 };
-

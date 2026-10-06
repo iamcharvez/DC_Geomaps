@@ -36,6 +36,26 @@ function short(value?: string | null) {
   return value ? `${value.slice(0, 10)}…${value.slice(-6)}` : "—";
 }
 
+function duration(seconds?: number | null) {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  if (minutes < 60) return `${minutes}m ${remainder}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function elapsed(value?: string | null) {
+  if (!value) return "—";
+  const started = new Date(value).getTime();
+  return Number.isNaN(started) ? "—" : duration((Date.now() - started) / 1000);
+}
+
+function stage(value?: string | null) {
+  return value ? value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Preparing";
+}
+
 export function Dashboard({
   token,
   user,
@@ -78,6 +98,7 @@ export function Dashboard({
   const diskPercent = status ? Math.round((status.disk.used / status.disk.total) * 100) : 0;
   const initials = user.username.slice(0, 2).toUpperCase();
   const healthy = !!status && status.service === "healthy";
+  const resourcesSafe = status?.resources.safe ?? true;
 
   const run = async (action: string) => {
     const dangerous = action === "rebuild" || action === "rollback";
@@ -101,6 +122,11 @@ export function Dashboard({
     return [
       { label: "Last successful operation", value: date(status.last_success?.at), tone: "success" },
       { label: "Last source check", value: date(status.last_check?.checked_at), tone: "neutral" },
+      ...(status.schedule.retry ? [{
+        label: `Automatic retry ${status.schedule.retry.attempt}/${status.schedule.retry.max_attempts}`,
+        value: date(status.schedule.retry.due_at),
+        tone: "danger",
+      }] : []),
       { label: "Next daily update", value: date(status.schedule.next_daily), tone: "neutral" },
       { label: "Next monthly rebuild", value: date(status.schedule.next_monthly), tone: "accent" },
     ];
@@ -147,26 +173,47 @@ export function Dashboard({
                 <div><small>ACTIVE BASEMAP</small><strong>{status?.active?.version || "Not installed"}</strong><p>{status?.active ? `Activated ${date(status.active.activated_at)}` : "Run the first full build to publish a map"}</p></div>
                 <span className={`mini-status ${status?.active ? "ready" : "waiting"}`}>{status?.active ? "LIVE" : "WAITING"}</span>
               </article>
-              <article className="metric-card"><span className="metric-icon">◇</span><div><small>OSM SNAPSHOT</small><strong>{status?.active?.osm_timestamp?.slice(0, 10) || "—"}</strong><p>{status?.source?.mode || "No source"} source</p></div></article>
+              <article className="metric-card"><span className="metric-icon">◇</span><div><small>OSM SNAPSHOT</small><strong>{status?.active?.osm_timestamp?.slice(0, 10) || "—"}</strong><p>{status?.source ? `${status.source.mode} source` : "No source installed"}</p></div></article>
               <article className="metric-card"><span className="metric-icon">≋</span><div><small>ARCHIVE SIZE</small><strong>{bytes(status?.active?.archive_size)}</strong><p>PMTiles · native z{status?.native_max_zoom ?? 15}</p></div></article>
-              <article className="metric-card"><span className="metric-icon">◫</span><div><small>FREE DISK</small><strong>{bytes(status?.disk.free)}</strong><p>{diskPercent}% of volume in use</p></div></article>
+              <article className="metric-card"><span className="metric-icon">◫</span><div><small>FREE DISK</small><strong>{bytes(status?.disk.free)}</strong><p>{diskPercent}% used · {bytes(status?.resources.disk_required_free)} safety requirement</p></div></article>
             </section>
 
             <section className="main-grid">
               <article className="panel map-panel">
                 <header><div><p className="eyebrow">LIVE ARCHIVE</p><h2>Philippines coverage</h2></div><span className="coordinate">122.2° E · 12.4° N</span></header>
                 <Suspense fallback={<div className="map-empty"><p>Loading map renderer…</p></div>}>
-                  <MapPreview active={status?.active ?? null} />
+                  <MapPreview active={status?.active ?? null} job={status?.job} />
                 </Suspense>
               </article>
 
               <aside className="panel operations-panel">
                 <header><div><p className="eyebrow">CONTROL PLANE</p><h2>Operations</h2></div><span className="lock-badge">◆ ADMIN</span></header>
+                {status && (
+                  <div className={`resource-status ${resourcesSafe ? "safe" : "warning"}`}>
+                    <div><span>Memory available</span><strong>{bytes(status.resources.memory_available || Number.NaN)}</strong><small>{bytes(status.resources.java_heap)} Java heap</small></div>
+                    <div><span>Disk headroom</span><strong>{bytes(Math.max(0, status.disk.free - status.resources.disk_required_free))}</strong><small>{bytes(status.resources.disk_required_free)} required</small></div>
+                    <b>{resourcesSafe ? "Safety checks passed" : `Blocked: ${status.resources.warnings.join(", ")}`}</b>
+                  </div>
+                )}
+                {!busy && status?.schedule.retry && (
+                  <div className="retry-notice">
+                    <strong>Automatic retry scheduled</strong>
+                    <span>{status.schedule.retry.kind} attempt {status.schedule.retry.attempt}/{status.schedule.retry.max_attempts} · {date(status.schedule.retry.due_at)}</span>
+                  </div>
+                )}
                 {busy && status && (
                   <div className="job-progress">
                     <div><strong>{status.job.message}</strong><span>{status.job.progress}%</span></div>
                     <progress max="100" value={status.job.progress} />
-                    <small>{status.job.stage} · started {date(status.job.started_at)}</small>
+                    <small>{stage(status.job.stage)} · running {elapsed(status.job.started_at)} · started {date(status.job.started_at)}</small>
+                    {(status.job.bytes_total > 0 || status.job.bytes_per_second > 0) && (
+                      <div className="transfer-grid">
+                        <span><small>Transferred</small><strong>{bytes(status.job.bytes_downloaded)} / {bytes(status.job.bytes_total)}</strong></span>
+                        <span><small>Speed</small><strong>{bytes(status.job.bytes_per_second)}/s</strong></span>
+                        <span><small>ETA</small><strong>{duration(status.job.eta_seconds)}</strong></span>
+                        <span><small>Attempt</small><strong>{status.job.attempt || 1}/{status.job.max_attempts || 1}{status.job.resumed ? " · resumed" : ""}</strong></span>
+                      </div>
+                    )}
                     <button className="danger-soft" disabled={status.job.status === "cancelling"} onClick={() => void run("cancel")}>{status.job.status === "cancelling" ? "Stopping safely…" : "Cancel update"}</button>
                   </div>
                 )}
@@ -197,7 +244,17 @@ export function Dashboard({
                   <div><dt>Previous version</dt><dd>{status?.previous?.version || "None retained"}</dd></div>
                   <div><dt>Display zoom</dt><dd>z0–{status?.display_max_zoom ?? 22} · vector overzoom</dd></div>
                 </dl>
-                {status?.last_failure && <div className="failure-note"><strong>Last failure</strong><span>{status.last_failure.message}</span><small>{date(status.last_failure.at)}</small></div>}
+                {status?.last_failure && (
+                  <div className={`failure-note ${status.last_failure.resolved_at ? "resolved" : ""}`}>
+                    <strong>{status.last_failure.resolved_at ? "Previous failure · resolved" : busy ? "Previous failure · recovery running" : "Last failure · attention needed"}</strong>
+                    <span>{status.last_failure.message}</span>
+                    <small>
+                      {status.last_failure.category ? `${status.last_failure.category} · ` : ""}{date(status.last_failure.at)}
+                      {status.last_failure.resolved_at ? ` · resolved ${date(status.last_failure.resolved_at)}` : ""}
+                      {!status.last_failure.resolved_at && status.last_failure.retry_at ? ` · retry ${date(status.last_failure.retry_at)}` : ""}
+                    </small>
+                  </div>
+                )}
               </article>
             </section>
           </>

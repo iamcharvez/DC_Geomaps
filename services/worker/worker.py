@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import http.client
 import json
 import math
 import os
+import re
 import shutil
 import signal
+import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -34,6 +38,7 @@ PHILIPPINES_SAMPLES = {
     "visayas": (123.8854, 10.3157),
     "mindanao": (125.4553, 7.1907),
 }
+RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
 
 def utc_now() -> str:
@@ -62,6 +67,24 @@ def sha256_file(path: Path, cancel: threading.Event | None = None) -> str:
                 raise Cancelled("Checksum cancelled.")
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def md5_file(path: Path, cancel: threading.Event | None = None) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            if cancel and cancel.is_set():
+                raise Cancelled("Checksum cancelled.")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def java_heap_bytes(options: str) -> int:
+    match = re.search(r"(?:^|\s)-Xmx(\d+)([kKmMgGtT]?)\b", options)
+    if not match:
+        return 0
+    units = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
+    return int(match.group(1)) * units[match.group(2).lower()]
 
 
 def xyz(longitude: float, latitude: float, zoom: int) -> tuple[int, int, int]:
@@ -98,6 +121,10 @@ class Cancelled(RuntimeError):
 
 
 class UpdateFailure(RuntimeError):
+    pass
+
+
+class ChecksumMismatch(UpdateFailure):
     pass
 
 
@@ -139,6 +166,16 @@ class Settings:
     threads: int
     max_zoom: int
     min_free_gb: int
+    download_retries: int
+    retry_base_seconds: int
+    download_timeout_seconds: int
+    scheduled_retry_minutes: int
+    scheduled_retry_max_attempts: int
+    disk_working_multiplier: float
+    memory_reserve_mb: int
+    min_available_memory_mb: int
+    log_max_mb: int
+    log_backups: int
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -167,6 +204,16 @@ class Settings:
             threads=max(1, int(os.environ.get("PLANETILER_THREADS", "4"))),
             max_zoom=max_zoom,
             min_free_gb=max(1, int(os.environ.get("MIN_FREE_DISK_GB", "25"))),
+            download_retries=max(1, int(os.environ.get("DOWNLOAD_RETRIES", "5"))),
+            retry_base_seconds=max(1, int(os.environ.get("DOWNLOAD_RETRY_BASE_SECONDS", "5"))),
+            download_timeout_seconds=max(30, int(os.environ.get("DOWNLOAD_TIMEOUT_SECONDS", "120"))),
+            scheduled_retry_minutes=max(1, int(os.environ.get("SCHEDULED_RETRY_MINUTES", "30"))),
+            scheduled_retry_max_attempts=max(1, int(os.environ.get("SCHEDULED_RETRY_MAX_ATTEMPTS", "5"))),
+            disk_working_multiplier=max(2.0, float(os.environ.get("DISK_WORKING_MULTIPLIER", "8"))),
+            memory_reserve_mb=max(256, int(os.environ.get("MEMORY_RESERVE_MB", "512"))),
+            min_available_memory_mb=max(128, int(os.environ.get("MIN_AVAILABLE_MEMORY_MB", "256"))),
+            log_max_mb=max(1, int(os.environ.get("WORKER_LOG_MAX_MB", "50"))),
+            log_backups=max(1, int(os.environ.get("WORKER_LOG_BACKUPS", "3"))),
         )
 
 
@@ -183,15 +230,30 @@ class BasemapController:
         for directory in (self.private, self.public, self.work, self.logs_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self.state_lock = threading.RLock()
+        self.log_lock = threading.Lock()
         self.job_lock = threading.Lock()
         self.cancel_event = threading.Event()
         self.process: subprocess.Popen[bytes] | None = None
         self.state = read_json(self.state_path, self._initial_state())
+        self.state.setdefault("scheduled_retry", None)
         if self.state.get("job", {}).get("status") in {"queued", "running", "cancelling"}:
+            interrupted = self.state.get("job", {})
             self.state["last_failure"] = {
                 "at": utc_now(),
                 "message": "The worker restarted during an update; the active basemap was not changed.",
+                "category": "interrupted",
+                "action": interrupted.get("action"),
+                "stage": interrupted.get("stage"),
+                "cancelled": False,
             }
+            if interrupted.get("scheduled_kind"):
+                self._schedule_retry(
+                    action=str(interrupted.get("action") or "update"),
+                    kind=str(interrupted["scheduled_kind"]),
+                    key=str(interrupted.get("scheduled_key") or ""),
+                    attempt=int(interrupted.get("scheduled_attempt") or 1),
+                    detail="Worker restarted during the scheduled operation.",
+                )
             self.state["job"] = self._idle_job()
         self._safe_clear_work_root()
         self._remove_old_archives()
@@ -207,7 +269,18 @@ class BasemapController:
             "progress": 0,
             "message": "Ready",
             "started_at": None,
+            "updated_at": utc_now(),
             "cancel_requested": False,
+            "bytes_downloaded": 0,
+            "bytes_total": 0,
+            "bytes_per_second": 0,
+            "eta_seconds": None,
+            "attempt": None,
+            "max_attempts": None,
+            "resumed": False,
+            "scheduled_kind": None,
+            "scheduled_key": None,
+            "scheduled_attempt": None,
         }
 
     def _initial_state(self) -> dict[str, Any]:
@@ -222,16 +295,44 @@ class BasemapController:
             "last_failure": None,
             "last_scheduled_daily": None,
             "last_scheduled_monthly": None,
+            "scheduled_retry": None,
         }
 
     def _save(self) -> None:
         with self.state_lock:
             atomic_json(self.state_path, self.state)
 
+    def _rotate_log_locked(self, incoming: int) -> None:
+        maximum = self.settings.log_max_mb * 1024**2
+        try:
+            current = self.log_path.stat().st_size
+        except FileNotFoundError:
+            current = 0
+        if current + incoming <= maximum:
+            return
+        oldest = self.log_path.with_name(f"{self.log_path.name}.{self.settings.log_backups}")
+        oldest.unlink(missing_ok=True)
+        for index in range(self.settings.log_backups - 1, 0, -1):
+            source = self.log_path.with_name(f"{self.log_path.name}.{index}")
+            if source.exists():
+                os.replace(source, self.log_path.with_name(f"{self.log_path.name}.{index + 1}"))
+        if self.log_path.exists():
+            os.replace(self.log_path, self.log_path.with_name(f"{self.log_path.name}.1"))
+
+    def _emit_log(self, payload: bytes) -> None:
+        with self.log_lock:
+            self._rotate_log_locked(len(payload))
+            with self.log_path.open("ab") as target:
+                target.write(payload)
+                target.flush()
+            try:
+                sys.stdout.buffer.write(payload)
+                sys.stdout.buffer.flush()
+            except (AttributeError, OSError):
+                print(payload.decode("utf-8", errors="replace"), end="", flush=True)
+
     def _log(self, message: str) -> None:
-        line = f"{utc_now()} {message}"
-        with self.log_path.open("a", encoding="utf-8") as target:
-            target.write(line + "\n")
+        self._emit_log(f"{utc_now()} {message}\n".encode("utf-8"))
 
     def _audit(self, actor: str, action: str, outcome: str, detail: str = "") -> None:
         entry = {
@@ -246,6 +347,7 @@ class BasemapController:
 
     def _job(self, **updates: Any) -> None:
         with self.state_lock:
+            updates.setdefault("updated_at", utc_now())
             self.state["job"].update(updates)
             self._save()
             self._write_health()
@@ -253,6 +355,57 @@ class BasemapController:
     def _disk(self) -> dict[str, int]:
         usage = shutil.disk_usage(self.settings.root)
         return {"total": usage.total, "used": usage.used, "free": usage.free}
+
+    @staticmethod
+    def _memory() -> dict[str, int]:
+        values: dict[str, int] = {}
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                key, raw = line.split(":", 1)
+                values[key] = int(raw.strip().split()[0]) * 1024
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", 0)
+        try:
+            raw_limit = Path("/sys/fs/cgroup/memory.max").read_text(encoding="ascii").strip()
+            limit = 0 if raw_limit == "max" else int(raw_limit)
+            current = int(Path("/sys/fs/cgroup/memory.current").read_text(encoding="ascii").strip())
+            if limit > 0:
+                total = min(value for value in (total, limit) if value > 0)
+                cgroup_available = max(0, limit - current)
+                available = min(value for value in (available, cgroup_available) if value >= 0)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        return {"total": total, "available": available}
+
+    def _resource_status(self, remote_size: int = 0) -> dict[str, Any]:
+        disk = self._disk()
+        memory = self._memory()
+        heap = java_heap_bytes(self.settings.java_opts)
+        disk_floor = self.settings.min_free_gb * 1024**3
+        estimated_working = int(remote_size * self.settings.disk_working_multiplier)
+        required_disk = max(disk_floor, estimated_working)
+        reserve = self.settings.memory_reserve_mb * 1024**2
+        minimum_available = self.settings.min_available_memory_mb * 1024**2
+        warnings = []
+        if disk["free"] < required_disk:
+            warnings.append("disk")
+        if memory["total"] and heap and heap + reserve > memory["total"]:
+            warnings.append("memory-limit")
+        if memory["available"] and memory["available"] < minimum_available:
+            warnings.append("memory-pressure")
+        return {
+            "safe": not warnings,
+            "warnings": warnings,
+            "disk_required_free": required_disk,
+            "disk_configured_floor": disk_floor,
+            "memory_total": memory["total"],
+            "memory_available": memory["available"],
+            "java_heap": heap,
+            "memory_reserve": reserve,
+            "minimum_available_memory": minimum_available,
+        }
 
     def status(self) -> dict[str, Any]:
         now = datetime.now(self.settings.timezone)
@@ -266,7 +419,10 @@ class BasemapController:
             "monthly_full": f"First Sunday {self.settings.monthly_hour:02d}:00",
             "next_daily": daily.isoformat(),
             "next_monthly": monthly.isoformat(),
+            "retry": snapshot.get("scheduled_retry"),
         }
+        remote_size = int((snapshot.get("last_check") or {}).get("content_length") or 0)
+        snapshot["resources"] = self._resource_status(remote_size)
         snapshot["native_max_zoom"] = self.settings.max_zoom
         snapshot["display_max_zoom"] = 22
         return snapshot
@@ -291,7 +447,15 @@ class BasemapController:
                 continue
         return list(reversed(result))
 
-    def start(self, action: str, actor: str) -> dict[str, Any]:
+    def start(
+        self,
+        action: str,
+        actor: str,
+        *,
+        scheduled_kind: str | None = None,
+        scheduled_key: str | None = None,
+        scheduled_attempt: int | None = None,
+    ) -> dict[str, Any]:
         if action == "cancel":
             return self.cancel(actor)
         if action == "rollback":
@@ -299,17 +463,28 @@ class BasemapController:
         if not self.job_lock.acquire(blocking=False):
             raise UpdateFailure("Another basemap operation is already running.")
         self.cancel_event.clear()
-        self._job(
-            status="queued",
-            action=action,
-            stage="queued",
-            progress=0,
-            message=f"{action.capitalize()} queued",
-            started_at=utc_now(),
-            cancel_requested=False,
-        )
-        threading.Thread(target=self._run, args=(action, actor), daemon=True).start()
+        with self.state_lock:
+            self.state["job"] = {
+                **self._idle_job(),
+                "status": "queued",
+                "action": action,
+                "stage": "queued",
+                "progress": 0,
+                "message": f"{action.capitalize()} queued",
+                "started_at": utc_now(),
+                "scheduled_kind": scheduled_kind,
+                "scheduled_key": scheduled_key,
+                "scheduled_attempt": scheduled_attempt,
+            }
+            self._save()
+            self._write_health()
+        threading.Thread(
+            target=self._run,
+            args=(action, actor, scheduled_kind, scheduled_key, scheduled_attempt),
+            daemon=True,
+        ).start()
         self._audit(actor, action, "accepted")
+        self._log(f"Accepted {action} requested by {actor}")
         return {"accepted": True, "action": action}
 
     def cancel(self, actor: str) -> dict[str, Any]:
@@ -352,7 +527,70 @@ class BasemapController:
         self._log(f"Rollback activated {previous['version']}")
         return {"accepted": True, "active": previous}
 
-    def _run(self, action: str, actor: str) -> None:
+    @staticmethod
+    def _failure_category(cause: Exception, stage: str | None) -> str:
+        message = str(cause).lower()
+        if "disk" in message or "space" in message:
+            return "disk"
+        if "memory" in message or "heap" in message or "outofmemory" in message:
+            return "memory"
+        if "checksum" in message:
+            return "checksum"
+        if any(word in message for word in ("timed out", "url", "network", "connection", "http")):
+            return "network"
+        if stage == "building" or "planetiler" in message:
+            return "build"
+        if stage and (stage.startswith("validating") or stage == "range-test"):
+            return "validation"
+        return "internal"
+
+    def _schedule_retry(self, action: str, kind: str, key: str, attempt: int, detail: str) -> dict[str, Any] | None:
+        if attempt >= self.settings.scheduled_retry_max_attempts:
+            return None
+        due = datetime.now(UTC) + timedelta(minutes=self.settings.scheduled_retry_minutes)
+        retry = {
+            "kind": kind,
+            "key": key,
+            "action": action,
+            "attempt": attempt + 1,
+            "max_attempts": self.settings.scheduled_retry_max_attempts,
+            "due_at": due.isoformat().replace("+00:00", "Z"),
+            "last_error": detail,
+        }
+        self.state["scheduled_retry"] = retry
+        return retry
+
+    def _record_success(self, action: str, scheduled_kind: str | None, scheduled_key: str | None) -> None:
+        completed_at = utc_now()
+        with self.state_lock:
+            failure = self.state.get("last_failure")
+            if failure and not failure.get("resolved_at"):
+                failure["resolved_at"] = completed_at
+                failure["resolved_by"] = action
+            retry = self.state.get("scheduled_retry")
+            if retry and (
+                (scheduled_kind and retry.get("kind") == scheduled_kind)
+                or (not scheduled_kind and action in {"update", "rebuild"})
+            ):
+                self.state["scheduled_retry"] = None
+            active = self.state.get("active") or {}
+            self.state["last_success"] = {
+                "at": completed_at,
+                "action": action,
+                "version": active.get("version", ""),
+            }
+            if scheduled_kind and scheduled_key:
+                self.state[f"last_scheduled_{scheduled_kind}"] = scheduled_key
+            self._save()
+
+    def _run(
+        self,
+        action: str,
+        actor: str,
+        scheduled_kind: str | None = None,
+        scheduled_key: str | None = None,
+        scheduled_attempt: int | None = None,
+    ) -> None:
         job_id = uuid.uuid4().hex
         work_dir = (self.work / job_id).resolve()
         work_dir.mkdir(parents=True, exist_ok=False)
@@ -367,17 +605,53 @@ class BasemapController:
                     self._update(work_dir, force_full=action == "rebuild")
                 else:
                     raise UpdateFailure(f"Unsupported action: {action}")
+            self._record_success(action, scheduled_kind, scheduled_key)
             self._audit(actor, action, "success")
+            self._log(f"Completed {action} requested by {actor}")
         except Cancelled as cause:
             self._log(str(cause))
             self._audit(actor, action, "cancelled", str(cause))
             with self.state_lock:
-                self.state["last_failure"] = {"at": utc_now(), "message": str(cause), "cancelled": True}
+                if scheduled_kind:
+                    self.state["scheduled_retry"] = None
+                self.state["last_failure"] = {
+                    "at": utc_now(),
+                    "message": str(cause),
+                    "category": "cancelled",
+                    "action": action,
+                    "stage": self.state.get("job", {}).get("stage"),
+                    "cancelled": True,
+                }
         except Exception as cause:
             self._log(f"{action} failed: {cause}")
             self._audit(actor, action, "failed", str(cause))
             with self.state_lock:
-                self.state["last_failure"] = {"at": utc_now(), "message": str(cause), "cancelled": False}
+                stage = self.state.get("job", {}).get("stage")
+                retry = None
+                if scheduled_kind and scheduled_key:
+                    retry = self._schedule_retry(
+                        action,
+                        scheduled_kind,
+                        scheduled_key,
+                        scheduled_attempt or 1,
+                        str(cause),
+                    )
+                self.state["last_failure"] = {
+                    "at": utc_now(),
+                    "message": str(cause),
+                    "category": self._failure_category(cause, stage),
+                    "action": action,
+                    "stage": stage,
+                    "cancelled": False,
+                    "retry_at": retry.get("due_at") if retry else None,
+                    "retry_exhausted": bool(scheduled_kind and not retry),
+                }
+                self._save()
+                if retry:
+                    self._log(
+                        f"Scheduled {scheduled_kind} retry {retry['attempt']}/{retry['max_attempts']} "
+                        f"for {retry['due_at']}"
+                    )
         finally:
             self.process = None
             self._safe_remove_work(work_dir)
@@ -388,32 +662,107 @@ class BasemapController:
         if self.cancel_event.is_set():
             raise Cancelled("The operation was cancelled; the active basemap was not changed.")
 
-    def _check_disk(self) -> None:
-        free = self._disk()["free"]
-        required = self.settings.min_free_gb * 1024**3
-        if free < required:
+    def _check_resources(self, remote_size: int = 0) -> None:
+        status = self._resource_status(remote_size)
+        disk = self._disk()
+        if "disk" in status["warnings"]:
             raise UpdateFailure(
-                f"Insufficient disk space: {free / 1024**3:.1f} GiB free; {self.settings.min_free_gb} GiB required."
+                f"Insufficient disk space: {disk['free'] / 1024**3:.1f} GiB free; "
+                f"{status['disk_required_free'] / 1024**3:.1f} GiB required for the safety floor and working data."
+            )
+        if "memory-limit" in status["warnings"]:
+            raise UpdateFailure(
+                f"Unsafe Java heap: {status['java_heap'] / 1024**3:.1f} GiB heap plus "
+                f"{status['memory_reserve'] / 1024**3:.1f} GiB reserve exceeds the available memory limit."
+            )
+        if "memory-pressure" in status["warnings"]:
+            raise UpdateFailure(
+                f"Insufficient available memory: {status['memory_available'] / 1024**2:.0f} MiB available; "
+                f"{status['minimum_available_memory'] / 1024**2:.0f} MiB required before starting."
             )
 
-    def _remote_info(self) -> dict[str, str]:
+    @staticmethod
+    def _retryable(cause: Exception) -> bool:
+        if isinstance(cause, urllib.error.HTTPError):
+            return cause.code in RETRYABLE_HTTP_STATUS
+        if isinstance(cause, ChecksumMismatch):
+            return True
+        if isinstance(cause, OSError) and getattr(cause, "errno", None) in {13, 28, 30}:
+            return False
+        return isinstance(
+            cause,
+            (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, http.client.IncompleteRead),
+        )
+
+    def _retry_wait(self, label: str, attempt: int, cause: Exception, stage: str) -> None:
+        delay = min(300, self.settings.retry_base_seconds * 2 ** max(0, attempt - 1))
+        self._log(
+            f"{label} attempt {attempt}/{self.settings.download_retries} failed: {cause}; "
+            f"retrying in {delay}s"
+        )
+        self._job(
+            stage=stage,
+            message=f"{label} interrupted · retrying in {delay}s",
+            attempt=attempt + 1,
+            max_attempts=self.settings.download_retries,
+        )
+        if self.cancel_event.wait(delay):
+            raise Cancelled(f"{label} was cancelled during retry backoff.")
+
+    def _request_bytes(
+        self,
+        request: urllib.request.Request,
+        label: str,
+        *,
+        limit: int | None = None,
+        optional: bool = False,
+    ) -> tuple[bytes, dict[str, str], int]:
+        last_error: Exception | None = None
+        attempts_made = 0
+        for attempt in range(1, self.settings.download_retries + 1):
+            attempts_made = attempt
+            self._check_cancel()
+            try:
+                with urllib.request.urlopen(request, timeout=self.settings.download_timeout_seconds) as response:
+                    payload = response.read() if limit is None else response.read(limit)
+                    return payload, dict(response.headers.items()), int(response.status)
+            except Exception as cause:
+                last_error = cause
+                if not self._retryable(cause) or attempt >= self.settings.download_retries:
+                    break
+                self._retry_wait(label, attempt, cause, "retrying-network")
+        if optional:
+            self._log(f"{label} unavailable after {attempts_made} attempt(s): {last_error}")
+            return b"", {}, 0
+        raise UpdateFailure(
+            f"{label} failed after {attempts_made} attempt(s): {last_error}"
+        ) from last_error
+
+    def _remote_info(self) -> dict[str, Any]:
         self._job(stage="checking", progress=5, message="Checking Geofabrik metadata")
         request = urllib.request.Request(self.settings.checksum_url, headers={"User-Agent": "DC-Geomap/0.1"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            text = response.read(4096).decode("ascii", errors="strict").strip()
+        payload, _, _ = self._request_bytes(request, "Geofabrik checksum request", limit=4096)
+        text = payload.decode("ascii", errors="strict").strip()
         checksum = text.split()[0].lower()
         if len(checksum) != 32 or any(char not in "0123456789abcdef" for char in checksum):
             raise UpdateFailure("Geofabrik returned an invalid MD5 checksum.")
         modified = ""
+        content_length = 0
+        head = urllib.request.Request(
+            self.settings.osm_url, method="HEAD", headers={"User-Agent": "DC-Geomap/0.1"}
+        )
+        _, headers, _ = self._request_bytes(head, "Geofabrik source metadata request", limit=0, optional=True)
+        modified = headers.get("Last-Modified", "")
         try:
-            head = urllib.request.Request(
-                self.settings.osm_url, method="HEAD", headers={"User-Agent": "DC-Geomap/0.1"}
-            )
-            with urllib.request.urlopen(head, timeout=30) as response:
-                modified = response.headers.get("Last-Modified", "")
-        except urllib.error.URLError:
-            pass
-        result = {"checksum_md5": checksum, "last_modified": modified, "checked_at": utc_now()}
+            content_length = int(headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            content_length = 0
+        result = {
+            "checksum_md5": checksum,
+            "last_modified": modified,
+            "content_length": content_length,
+            "checked_at": utc_now(),
+        }
         with self.state_lock:
             self.state["last_check"] = result
             self._save()
@@ -426,53 +775,172 @@ class BasemapController:
         self._log(f"Update check completed: {'change available' if changed else 'current'}")
         self._job(stage="complete", progress=100, message="Update available" if changed else "Already current")
 
-    def _download(self, destination: Path, expected_md5: str) -> None:
-        partial = destination.with_suffix(destination.suffix + ".partial")
-        request = urllib.request.Request(self.settings.osm_url, headers={"User-Agent": "DC-Geomap/0.1"})
-        digest = hashlib.md5(usedforsecurity=False)
-        with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as target:
-            total = int(response.headers.get("Content-Length", "0") or 0)
-            received = 0
-            while chunk := response.read(4 * 1024 * 1024):
-                self._check_cancel()
-                target.write(chunk)
-                digest.update(chunk)
-                received += len(chunk)
-                if total:
+    def _download(self, destination: Path, expected_md5: str, expected_size: int = 0) -> None:
+        download_dir = self.private / "source" / "downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        complete = download_dir / f"philippines-{expected_md5}.osm.pbf"
+        partial = complete.with_suffix(complete.suffix + ".partial")
+        for stale in download_dir.glob("philippines-*.osm.pbf*"):
+            if stale not in {complete, partial}:
+                stale.unlink(missing_ok=True)
+
+        if complete.is_file():
+            self._job(stage="verifying-download", progress=30, message="Verifying cached Philippines extract")
+            if md5_file(complete, self.cancel_event) == expected_md5:
+                shutil.copy2(complete, destination)
+                self._log(f"Reused verified download cache {complete.name}")
+                return
+            complete.unlink(missing_ok=True)
+
+        last_error: Exception | None = None
+        attempts_made = 0
+        for attempt in range(1, self.settings.download_retries + 1):
+            attempts_made = attempt
+            self._check_cancel()
+            offset = partial.stat().st_size if partial.is_file() else 0
+            if expected_size and offset > expected_size:
+                partial.unlink(missing_ok=True)
+                offset = 0
+            if expected_size and offset == expected_size:
+                actual = md5_file(partial, self.cancel_event)
+                if actual == expected_md5:
+                    os.replace(partial, complete)
+                    shutil.copy2(complete, destination)
+                    return
+                partial.unlink(missing_ok=True)
+                offset = 0
+
+            headers = {"User-Agent": "DC-Geomap/0.1"}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            request = urllib.request.Request(self.settings.osm_url, headers=headers)
+            started = time.monotonic()
+            received_this_attempt = 0
+            next_log_percent = -1
+            try:
+                with urllib.request.urlopen(request, timeout=self.settings.download_timeout_seconds) as response:
+                    status = int(response.status)
+                    resumed = bool(offset and status == HTTPStatus.PARTIAL_CONTENT)
+                    if offset and not resumed:
+                        self._log("Download server did not honor Range; restarting the partial file safely")
+                        offset = 0
+                    mode = "ab" if resumed else "wb"
+                    content_length = int(response.headers.get("Content-Length", "0") or 0)
+                    content_range = response.headers.get("Content-Range", "")
+                    range_match = re.match(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", content_range)
+                    if resumed and (not range_match or int(range_match.group(1)) != offset):
+                        raise UpdateFailure("Geofabrik returned an invalid Content-Range while resuming the PBF.")
+                    total = (
+                        int(range_match.group(3))
+                        if range_match and range_match.group(3) != "*"
+                        else expected_size or offset + content_length
+                    )
                     self._job(
                         stage="downloading",
-                        progress=min(30, 10 + int(received / total * 20)),
-                        message=f"Downloading source · {received / 1024**2:.0f} / {total / 1024**2:.0f} MiB",
+                        progress=10 if not total else min(30, 10 + int(offset / total * 20)),
+                        message="Resuming Philippines extract" if resumed else "Downloading Philippines extract",
+                        bytes_downloaded=offset,
+                        bytes_total=total,
+                        bytes_per_second=0,
+                        eta_seconds=None,
+                        attempt=attempt,
+                        max_attempts=self.settings.download_retries,
+                        resumed=resumed,
                     )
-            target.flush()
-            os.fsync(target.fileno())
-        if digest.hexdigest().lower() != expected_md5:
-            partial.unlink(missing_ok=True)
-            raise UpdateFailure("Downloaded PBF checksum did not match Geofabrik.")
-        os.replace(partial, destination)
+                    with partial.open(mode) as target:
+                        while True:
+                            try:
+                                chunk = response.read(4 * 1024 * 1024)
+                            except http.client.IncompleteRead as cause:
+                                if cause.partial:
+                                    target.write(cause.partial)
+                                    received_this_attempt += len(cause.partial)
+                                raise
+                            if not chunk:
+                                break
+                            self._check_cancel()
+                            target.write(chunk)
+                            received_this_attempt += len(chunk)
+                            received = offset + received_this_attempt
+                            elapsed = max(0.001, time.monotonic() - started)
+                            speed = int(received_this_attempt / elapsed)
+                            eta = int((total - received) / speed) if total > received and speed else None
+                            progress = min(30, 10 + int(received / total * 20)) if total else 10
+                            self._job(
+                                stage="downloading",
+                                progress=progress,
+                                message=f"Downloading source · {received / 1024**2:.0f} / {total / 1024**2:.0f} MiB"
+                                if total
+                                else f"Downloading source · {received / 1024**2:.0f} MiB",
+                                bytes_downloaded=received,
+                                bytes_total=total,
+                                bytes_per_second=speed,
+                                eta_seconds=eta,
+                            )
+                            percent = int(received / total * 100) if total else 0
+                            if total and percent // 10 > next_log_percent // 10:
+                                next_log_percent = percent
+                                self._log(
+                                    f"Download {percent}% · {received / 1024**2:.0f}/{total / 1024**2:.0f} MiB "
+                                    f"· {speed / 1024**2:.1f} MiB/s"
+                                )
+                            self._check_resources(total)
+                        target.flush()
+                        os.fsync(target.fileno())
+
+                self._job(stage="verifying-download", progress=32, message="Verifying downloaded PBF checksum")
+                actual = md5_file(partial, self.cancel_event)
+                if actual != expected_md5:
+                    partial.unlink(missing_ok=True)
+                    raise ChecksumMismatch("Downloaded PBF checksum did not match Geofabrik.")
+                os.replace(partial, complete)
+                shutil.copy2(complete, destination)
+                self._log(f"Download verified: {complete.name}")
+                return
+            except Cancelled:
+                raise
+            except Exception as cause:
+                last_error = cause
+                if not self._retryable(cause) or attempt >= self.settings.download_retries:
+                    break
+                self._retry_wait("Philippines extract download", attempt, cause, "retrying-download")
+
+        raise UpdateFailure(
+            f"Philippines extract download failed after {attempts_made} attempt(s); "
+            f"the partial file was retained for resume: {last_error}"
+        ) from last_error
 
     def _run_command(self, command: list[str], cwd: Path, label: str) -> None:
         self._log(f"Starting {label}: {' '.join(command)}")
-        with self.log_path.open("ab") as log:
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            self.process = process
-            while process.poll() is None:
-                if self.cancel_event.wait(1):
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                        process.wait(timeout=20)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    raise Cancelled(f"{label} was cancelled; the active basemap was not changed.")
-            if process.returncode != 0:
-                raise UpdateFailure(f"{label} failed with exit code {process.returncode}.")
-            self.process = None
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        self.process = process
+
+        def pump_output() -> None:
+            assert process.stdout is not None
+            while chunk := process.stdout.read(64 * 1024):
+                self._emit_log(chunk)
+
+        pump = threading.Thread(target=pump_output, daemon=True)
+        pump.start()
+        while process.poll() is None:
+            if self.cancel_event.wait(1):
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                pump.join(timeout=5)
+                raise Cancelled(f"{label} was cancelled; the active basemap was not changed.")
+        pump.join(timeout=5)
+        if process.returncode != 0:
+            raise UpdateFailure(f"{label} failed with exit code {process.returncode}.")
+        self.process = None
 
     def _osmium_timestamp(self, source: Path) -> str:
         result = subprocess.run(
@@ -491,7 +959,16 @@ class BasemapController:
         return self._osmium_timestamp(source)
 
     def _build(self, source: Path, output: Path, cwd: Path) -> None:
-        self._job(stage="building", progress=45, message="Planetiler is building native zooms 0–15")
+        self._check_resources(source.stat().st_size)
+        self._job(
+            stage="building",
+            progress=45,
+            message="Planetiler is building native zooms 0–15 · follow Build logs for detail",
+            bytes_downloaded=0,
+            bytes_total=0,
+            bytes_per_second=0,
+            eta_seconds=None,
+        )
         command = [
             "java",
             *self.settings.java_opts.split(),
@@ -551,8 +1028,10 @@ class BasemapController:
                 raise UpdateFailure("Caddy did not return a valid HTTP 206 Range response.")
 
     def _update(self, work_dir: Path, force_full: bool) -> None:
-        self._check_disk()
+        self._check_resources()
         remote = self._remote_info()
+        remote_size = int(remote.get("content_length") or 0)
+        self._check_resources(remote_size)
         current_source = self.state.get("source") or {}
         if not force_full and current_source.get("remote_checksum_md5") == remote["checksum_md5"]:
             self._log("No new Geofabrik data; rebuild skipped")
@@ -563,7 +1042,7 @@ class BasemapController:
         canonical_source = self.private / "source" / "philippines.osm.pbf"
         if force_full or not canonical_source.is_file():
             self._job(stage="downloading", progress=10, message="Downloading full Philippines extract")
-            self._download(candidate_source, remote["checksum_md5"])
+            self._download(candidate_source, remote["checksum_md5"], remote_size)
             source_mode = "full"
         else:
             self._job(stage="incremental", progress=15, message="Preparing incremental OSM update")
@@ -621,6 +1100,13 @@ class BasemapController:
                 self._save()
                 self._write_health()
             self._remove_old_archives()
+            cached_download = (
+                self.private
+                / "source"
+                / "downloads"
+                / f"philippines-{remote['checksum_md5']}.osm.pbf"
+            )
+            cached_download.unlink(missing_ok=True)
             self._job(stage="complete", progress=100, message=f"Activated {version}")
             self._log(f"Activated {filename}")
         except Exception:
@@ -677,20 +1163,50 @@ class BasemapController:
             monthly = first_sunday(now.year, now.month, self.settings.timezone, self.settings.monthly_hour)
             monthly_key = monthly.date().isoformat()
             daily_key = now.date().isoformat()
-            if (
+            retry = self.state.get("scheduled_retry")
+            retry_due = None
+            if retry:
+                try:
+                    retry_due = datetime.fromisoformat(str(retry["due_at"]).replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError):
+                    retry_due = datetime.now(UTC)
+            if retry and retry_due and datetime.now(UTC) >= retry_due:
+                try:
+                    self.start(
+                        str(retry["action"]),
+                        f"scheduler-retry:{retry['kind']}",
+                        scheduled_kind=str(retry["kind"]),
+                        scheduled_key=str(retry["key"]),
+                        scheduled_attempt=int(retry["attempt"]),
+                    )
+                except UpdateFailure:
+                    pass
+            elif (
                 now.date() == monthly.date()
                 and now.hour >= self.settings.monthly_hour
                 and self.state.get("last_scheduled_monthly") != monthly_key
             ):
                 try:
-                    self.start("rebuild", "scheduler")
+                    self.start(
+                        "rebuild",
+                        "scheduler:monthly",
+                        scheduled_kind="monthly",
+                        scheduled_key=monthly_key,
+                        scheduled_attempt=1,
+                    )
                     self.state["last_scheduled_monthly"] = monthly_key
                     self._save()
                 except UpdateFailure:
                     pass
             elif now.hour >= self.settings.daily_hour and self.state.get("last_scheduled_daily") != daily_key:
                 try:
-                    self.start("update", "scheduler")
+                    self.start(
+                        "update",
+                        "scheduler:daily",
+                        scheduled_kind="daily",
+                        scheduled_key=daily_key,
+                        scheduled_attempt=1,
+                    )
                     self.state["last_scheduled_daily"] = daily_key
                     self._save()
                 except UpdateFailure:
@@ -703,6 +1219,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
     server_version = "DCGeomapWorker/0.1"
 
     def log_message(self, format: str, *args: Any) -> None:
+        if self.command == "GET" and urlparse(self.path).path in {"/health", "/v1/status", "/v1/logs", "/v1/audit"}:
+            return
         self.controller._log(f"http {self.address_string()} {format % args}")
 
     def _send(self, status: int, payload: Any) -> None:

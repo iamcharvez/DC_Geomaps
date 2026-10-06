@@ -4,7 +4,7 @@
 
 1. The worker obtains the Geofabrik `.md5` and PBF `Last-Modified` metadata.
 2. If the last successfully observed Geofabrik checksum has not changed, the daily job exits without rebuilding.
-3. A first or forced job downloads a new PBF to a `.partial` file and verifies its MD5. A normal changed-data job copies the installed PBF to staging and runs `pyosmium-up-to-date` against the replication metadata embedded in the extract.
+3. A first or forced job downloads a new PBF to checksum-keyed persistent staging, resumes interrupted transfers with HTTP Range, and verifies its MD5. Network failures use bounded exponential backoff. A normal changed-data job copies the installed PBF to staging and runs `pyosmium-up-to-date` against the replication metadata embedded in the extract.
 4. `osmium fileinfo -e` scans the candidate before Planetiler runs.
 5. Planetiler generates a new versioned PMTiles archive in a unique staging directory. It never writes the active file.
 6. The PMTiles CLI verifies archive structure and its header must declare max zoom 15. The worker reads low, medium, and z15 tiles for Manila/Luzon, Cebu/Visayas, and Davao/Mindanao.
@@ -15,6 +15,9 @@
 ## Isolation and trust boundaries
 
 - Only Caddy is published. The API and worker are reachable on the private Compose network.
+- Caddy exposes only the versioned, read-only `/api/v1/integration` contract,
+  its generated MapLibre style, manifests, and immutable PMTiles archives to
+  consuming applications. The contract is sanitized before it leaves the API.
 - The worker accepts a shared bearer secret from the API, but the browser never receives it.
 - Every browser control request carries a signed Keycloak access token. The API verifies its signature with the realm's cached JWKS, then checks its issuer, expiry, issuing client, and exact administrator role before proxying to the worker. An unknown signing key triggers an immediate JWKS refresh for safe Keycloak key rotation.
 - The worker runs tools as UID/GID 10001 after a minimal root entrypoint prepares the Docker volume.
@@ -24,6 +27,8 @@
 ## Failure model
 
 - Downloads use a temporary suffix and a verified checksum.
+- Partial downloads survive job failure and worker restart, while a successfully downloaded PBF is cached until its PMTiles build activates.
+- Scheduled failures receive bounded same-day retries; failure metadata records the category, stage, next retry, and eventual resolution.
 - Each job uses both an in-process mutex and an advisory file lock.
 - Cancellation terminates the current process group, removes its staging directory, and never changes `active.json`.
 - A worker restart marks an interrupted job failed and safely clears only children of `/data/work`.
