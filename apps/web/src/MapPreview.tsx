@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
-import { FetchSource, PMTiles, Protocol } from "pmtiles";
+import { Protocol } from "pmtiles";
 import { basemapStyle } from "./basemap-style";
+import { authenticatedPmtiles } from "./pmtiles-source";
 import type { BasemapStatus, BasemapVersion } from "./types";
 
 const protocol = new Protocol();
@@ -19,7 +20,7 @@ export function MapPreview({ active, job, token }: { active: BasemapVersion | nu
       registered = true;
     }
     const absoluteArchive = new URL(active.url, window.location.href).href;
-    protocol.add(new PMTiles(new FetchSource(absoluteArchive, new Headers({ authorization: `Bearer ${token}` }))));
+    protocol.add(authenticatedPmtiles(absoluteArchive, token));
     setWarning(null);
     const instance = new maplibregl.Map({
       container: container.current,

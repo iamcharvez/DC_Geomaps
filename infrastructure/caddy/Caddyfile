@@ -58,6 +58,15 @@
 		header @manifest Cache-Control "no-cache, no-store, must-revalidate"
 
 		@archive path *.pmtiles
+		@archiveRange {
+			path *.pmtiles
+			header Range *
+		}
+		# Conditional validators take precedence over Range in HTTP and can
+		# produce an empty 304 response. PMTiles requires actual 206 bytes.
+		request_header @archiveRange -If-None-Match
+		request_header @archiveRange -If-Modified-Since
+		request_header @archiveRange -If-Range
 		header @archive Cache-Control "private, max-age=31536000, immutable"
 		header @archive Content-Type "application/vnd.pmtiles"
 
