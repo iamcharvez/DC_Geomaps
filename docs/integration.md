@@ -39,6 +39,10 @@ style endpoint returns HTTP 503 until a validated archive is active. Manifests
 and archives accept the same API key and enforce its origin, expiration,
 revocation, and rate limit.
 
+The published style includes place, road, water, park, establishment, airport,
+mountain, and house-number labels. It uses fonts installed on the consuming
+device and does not call a remote glyph, sprite, or public tile service.
+
 ## React and MapLibre
 
 Install the consuming project's browser libraries:
@@ -54,8 +58,11 @@ byte-range requests are authorized without placing the key in a URL.
 ```tsx
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { FetchSource, PMTiles, Protocol } from "pmtiles";
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 const DC_GEOMAP = "http://172.16.253.235:8081";
 const API_KEY = "dcgm_12345678_REPLACE_ME";

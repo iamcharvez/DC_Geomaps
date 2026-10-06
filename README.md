@@ -4,6 +4,12 @@ DC Geomap is a standalone, self-hosted Philippines OpenStreetMap basemap control
 
 It does **not** use `tile.openstreetmap.org`, does not write basemap data to PostGIS, and does not require DCGIS.
 
+The included local-font map style renders administrative places, streets,
+water features, parks, airports, peaks, establishments, and house numbers.
+Operators can select a rendered feature to inspect its available OSM category,
+reference, address fields, elevation, and coordinates without contacting an
+external map or font service.
+
 ## Architecture
 
 - **Web:** React 19 + MapLibre GL JS. The PMTiles renderer is loaded after login so the authentication screen stays small and fast.

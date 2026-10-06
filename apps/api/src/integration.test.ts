@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { validateStyleMin } from "@maplibre/maplibre-gl-style-spec";
 import { ApiKeyStore } from "./api-key-store.js";
 import { buildApp } from "./app.js";
 import type { Config } from "./config.js";
@@ -58,6 +59,22 @@ test("returns a PMTiles MapLibre style with native z15 and OSM attribution", () 
   assert.doesNotMatch(serialized, /tile\.openstreetmap\.org/);
   const source = (style.sources as Record<string, { maxzoom: number }>).openmaptiles;
   assert.equal(source.maxzoom, 15);
+  const layers = style.layers as Array<{ id: string; type: string; "source-layer"?: string; minzoom?: number }>;
+  assert.deepEqual(
+    layers.filter((layer) => ["place-labels", "road-labels", "poi-labels", "house-numbers"].includes(layer.id))
+      .map((layer) => [layer.id, layer["source-layer"], layer.type]),
+    [
+      ["house-numbers", "housenumber", "symbol"],
+      ["road-labels", "transportation_name", "symbol"],
+      ["poi-labels", "poi", "symbol"],
+      ["place-labels", "place", "symbol"],
+    ],
+  );
+  assert.equal(style.glyphs, undefined);
+  assert.deepEqual(
+    validateStyleMin(style as Parameters<typeof validateStyleMin>[0]).map((error) => error.message),
+    [],
+  );
 });
 
 test("does not publish a style before the first archive is active", () => {

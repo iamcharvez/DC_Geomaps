@@ -24,6 +24,16 @@ describe("basemap style", () => {
     expect(serialized).not.toContain("tile.openstreetmap.org");
   });
 
+  it("renders local-font labels for places, roads, establishments, and addresses", () => {
+    const style = basemapStyle("/basemap/current.pmtiles", "https://maps.example.test/");
+    const layers = new Map(style.layers.map((layer) => [layer.id, layer]));
+    expect(layers.get("place-labels")).toMatchObject({ type: "symbol", "source-layer": "place" });
+    expect(layers.get("road-labels")).toMatchObject({ type: "symbol", "source-layer": "transportation_name" });
+    expect(layers.get("poi-labels")).toMatchObject({ type: "symbol", "source-layer": "poi" });
+    expect(layers.get("house-numbers")).toMatchObject({ type: "symbol", "source-layer": "housenumber", minzoom: 15 });
+    expect(style.glyphs).toBeUndefined();
+  });
+
   it("is accepted by MapLibre's style validator", () => {
     const errors = validateStyleMin(
       basemapStyle("/basemap/current.pmtiles", "https://maps.example.test/"),

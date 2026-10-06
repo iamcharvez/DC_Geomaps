@@ -104,6 +104,16 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .map-version strong { font-size: 11px; }
 .map-version small { color: #a9c5bc; font-size: 8px; }
 .map-warning { position: absolute; z-index: 2; left: 18px; right: 18px; top: 16px; border-radius: 10px; background: rgba(104, 45, 35, .9); color: white; padding: 10px 12px; font-size: 10px; }
+.maplibregl-popup-content { overflow: hidden; border: 1px solid rgba(205,222,214,.95); border-radius: 14px; background: rgba(252,254,252,.97); padding: 0; box-shadow: 0 18px 45px rgba(14,48,39,.2); backdrop-filter: blur(16px); }
+.maplibregl-popup-close-button { z-index: 1; width: 28px; height: 28px; border-radius: 50%; color: #6a7e77; font-size: 18px; line-height: 28px; }
+.maplibregl-popup-close-button:hover { background: #e7f1ed; color: var(--ink); }
+.map-feature-card { min-width: 220px; max-width: 290px; padding: 16px 17px 14px; color: var(--ink); }
+.map-feature-card h3 { margin: 3px 25px 12px 0; font: 750 15px/1.25 inherit; letter-spacing: -.02em; }
+.map-feature-category { margin: 0; color: var(--green); font-size: 8px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.map-feature-card dl { display: grid; gap: 7px; margin: 0; }
+.map-feature-card dl > div { display: grid; grid-template-columns: 80px 1fr; gap: 10px; border-top: 1px solid #e8efeb; padding-top: 7px; }
+.map-feature-card dt { color: var(--muted); font-size: 8px; }
+.map-feature-card dd { overflow-wrap: anywhere; margin: 0; color: #35534b; font-size: 9px; font-weight: 650; text-align: right; }
 .map-empty { display: grid; place-content: center; justify-items: center; text-align: center; color: #587068; background: radial-gradient(circle at center, rgba(49,155,127,.12), transparent 30%), repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(68,113,100,.06) 40px), repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(68,113,100,.06) 40px), #e8efeb; }
 .map-empty h3 { margin: 3px 0; color: var(--ink); }
 .map-empty > p:last-child { max-width: 380px; margin: 8px 0 0; font-size: 11px; line-height: 1.6; }

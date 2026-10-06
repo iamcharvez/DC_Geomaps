@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { Protocol } from "pmtiles";
-import { basemapStyle } from "./basemap-style";
+import { basemapStyle, INTERACTIVE_BASEMAP_LAYERS } from "./basemap-style";
+import { mapFeatureDetails, type MapFeatureDetails } from "./map-feature-details";
 import { authenticatedPmtiles } from "./pmtiles-source";
 import type { BasemapStatus, BasemapVersion } from "./types";
 
@@ -14,6 +15,33 @@ let registered = false;
 // MapLibre's import.meta.url fallback points at a non-existent sibling of the
 // lazy MapPreview chunk in production.
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
+
+function popupContent(details: MapFeatureDetails): HTMLElement {
+  const content = document.createElement("article");
+  content.className = "map-feature-card";
+
+  const category = document.createElement("p");
+  category.className = "map-feature-category";
+  category.textContent = details.category;
+  content.append(category);
+
+  const title = document.createElement("h3");
+  title.textContent = details.title;
+  content.append(title);
+
+  const list = document.createElement("dl");
+  for (const row of details.rows) {
+    const item = document.createElement("div");
+    const label = document.createElement("dt");
+    const value = document.createElement("dd");
+    label.textContent = row.label;
+    value.textContent = row.value;
+    item.append(label, value);
+    list.append(item);
+  }
+  content.append(list);
+  return content;
+}
 
 export function MapPreview({ active, job, token }: { active: BasemapVersion | null; job?: BasemapStatus["job"]; token: string }) {
   const container = useRef<HTMLDivElement>(null);
@@ -43,6 +71,26 @@ export function MapPreview({ active, job, token }: { active: BasemapVersion | nu
     map.current = instance;
     instance.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     instance.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    instance.on("click", [...INTERACTIVE_BASEMAP_LAYERS], (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const properties = (feature.properties ?? {}) as Record<string, unknown>;
+      const details = mapFeatureDetails(
+        properties,
+        feature.sourceLayer ?? feature.layer.id,
+        event.lngLat,
+      );
+      new maplibregl.Popup({ closeButton: true, closeOnClick: true, offset: 10, maxWidth: "310px" })
+        .setLngLat(event.lngLat)
+        .setDOMContent(popupContent(details))
+        .addTo(instance);
+    });
+    instance.on("mouseenter", [...INTERACTIVE_BASEMAP_LAYERS], () => {
+      instance.getCanvas().style.cursor = "pointer";
+    });
+    instance.on("mouseleave", [...INTERACTIVE_BASEMAP_LAYERS], () => {
+      instance.getCanvas().style.cursor = "";
+    });
     instance.on("error", (event: maplibregl.ErrorEvent) => {
       const message = event.error?.message || "The active basemap could not be displayed.";
       setWarning(message);
