@@ -7,7 +7,7 @@ It does **not** use `tile.openstreetmap.org`, does not write basemap data to Pos
 ## Architecture
 
 - **Web:** React 19 + MapLibre GL JS. The PMTiles renderer is loaded after login so the authentication screen stays small and fast.
-- **API:** Fastify/TypeScript. It mediates Keycloak direct grants, introspects every protected request, and accepts only `role_dcgeomaps_admin`.
+- **API:** Fastify/TypeScript. It mediates Keycloak direct grants, verifies signed access tokens with the realm's JWKS, and accepts only `role_dcgeomaps_admin`.
 - **Worker:** Private Python service with pinned Planetiler, pyosmium, osmium-tool, and PMTiles CLI versions. It owns scheduling, locks, builds, validation, activation, rollback, progress, logs, and audit events.
 - **Caddy:** Serves the application and versioned archives with HTTP Range requests. The worker is not published to the host.
 - **Storage:** A dedicated `basemap_data` Docker volume containing public archives plus private PBF, cache, state, work, and logs. There is no application database.

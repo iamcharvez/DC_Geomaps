@@ -16,7 +16,7 @@
 
 - Only Caddy is published. The API and worker are reachable on the private Compose network.
 - The worker accepts a shared bearer secret from the API, but the browser never receives it.
-- Every browser control request is introspected with Keycloak immediately before it is proxied to the worker.
+- Every browser control request carries a signed Keycloak access token. The API verifies its signature with the realm's cached JWKS, then checks its issuer, expiry, issuing client, and exact administrator role before proxying to the worker. An unknown signing key triggers an immediate JWKS refresh for safe Keycloak key rotation.
 - The worker runs tools as UID/GID 10001 after a minimal root entrypoint prepares the Docker volume.
 - PBF, PMTiles, build cache, state, logs, and locks are isolated in `basemap_data`. No PostGIS database exists in this project.
 - The frontend uses only the URL in the authenticated status response/`active.json`; it has no public-tile fallback.
@@ -48,4 +48,3 @@ Private files include the installed PBF, Planetiler supporting-data cache, state
 ## Technology pins
 
 Container and package versions are explicit in Dockerfiles and package manifests, including Planetiler 0.10.2, go-pmtiles 1.30.0, pyosmium 4.3.1, Java 21, Node 24.19.0, Caddy 2.11.4, React 19.3.0, MapLibre GL JS 6.11.2, and PMTiles JS 4.5.0. Review release notes and run the full validation suite before changing a pin.
-

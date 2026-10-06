@@ -75,5 +75,5 @@ The requested production value is enforced as 15. To intentionally change it, up
 - **Replication failure:** use **Force full rebuild** to re-establish a current canonical PBF.
 - **Planetiler failure:** inspect build logs for JVM memory, disk, or upstream supporting-data errors. The current basemap remains active.
 - **Range failure:** verify Caddy serves the volume and no upstream proxy strips the `Range` header or converts 206 to 200.
-- **Cannot sign in:** verify the confidential-client secret, direct grants, introspection claims, TLS reachability, and exact role.
+- **Cannot sign in:** verify the confidential-client secret, direct grants, realm JWKS reachability, the token issuer/client claims, and the exact role.
 - **Map is blank but status is healthy:** run **Validate active**, inspect browser WebGL support, and confirm the archive uses the OpenMapTiles schema.

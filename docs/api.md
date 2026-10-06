@@ -26,7 +26,7 @@ Body:
 {"username":"operator","password":"secret"}
 ```
 
-Performs a Keycloak direct grant and immediately introspects the resulting access token. A token lacking `role_dcgeomaps_admin` is revoked and rejected. Login is limited to ten attempts per source IP per minute.
+Performs a Keycloak direct grant and immediately verifies the resulting token's signature and claims using the realm's JWKS. A token lacking `role_dcgeomaps_admin` is revoked and rejected. Login is limited to ten attempts per source IP per minute.
 
 ### `POST /api/v1/auth/refresh`
 
@@ -97,4 +97,3 @@ Safe serving status without paths, checksums, logs, or credentials.
 ### `GET|HEAD /basemap/philippines-<version>.pmtiles`
 
 Immutable PMTiles archive. Supports byte ranges, ETag, and Last-Modified through Caddy. CORS is restricted to `BASEMAP_ALLOWED_ORIGIN`. Directory listing is disabled.
-

@@ -2,10 +2,10 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
 import {
   AuthError,
-  introspectAdmin,
   passwordGrant,
   refreshGrant,
   revokeTokens,
+  verifyAdminToken,
   type AdminIdentity,
 } from "./keycloak.js";
 import { WorkerError, workerRequest } from "./worker-client.js";
@@ -56,7 +56,7 @@ export function buildApp(config: Config) {
   const requireAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
     const token = bearer(request);
     if (!token) return error(reply, 401, "unauthenticated", "Sign in to continue.");
-    request.admin = await introspectAdmin(config, token);
+    request.admin = await verifyAdminToken(config, token);
   };
 
   app.get("/health", async () => ({ status: "ok", service: "dc-geomap-api" }));
@@ -75,7 +75,7 @@ export function buildApp(config: Config) {
     }
     const tokens = await passwordGrant(config, username, password);
     try {
-      await introspectAdmin(config, tokens.access_token);
+      await verifyAdminToken(config, tokens.access_token);
     } catch (cause) {
       await revokeTokens(config, [tokens.access_token, tokens.refresh_token ?? ""]);
       throw cause;
@@ -89,7 +89,7 @@ export function buildApp(config: Config) {
     if (!refreshToken) return error(reply, 400, "invalid_input", "A refresh token is required.");
     const tokens = await refreshGrant(config, refreshToken);
     try {
-      await introspectAdmin(config, tokens.access_token);
+      await verifyAdminToken(config, tokens.access_token);
     } catch (cause) {
       await revokeTokens(config, [tokens.access_token, tokens.refresh_token ?? refreshToken]);
       throw cause;
@@ -142,4 +142,3 @@ export function buildApp(config: Config) {
 
   return app;
 }
-
