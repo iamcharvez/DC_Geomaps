@@ -9,8 +9,12 @@ RUN pnpm --filter @dc-geomap/api build && pnpm --filter @dc-geomap/api deploy --
 
 FROM node:24.19.0-bookworm-slim
 ENV NODE_ENV=production
-USER node
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder --chown=node:node /out ./
+COPY --chmod=0755 infrastructure/docker/api-entrypoint.sh /usr/local/bin/dcgeomap-api-entrypoint
 EXPOSE 8080
+ENTRYPOINT ["dcgeomap-api-entrypoint"]
 CMD ["node", "dist/server.js"]

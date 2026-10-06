@@ -103,3 +103,23 @@ export type AuditEvent = {
   outcome: string;
   detail: string;
 };
+
+export type IntegrationKey = {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: ["basemap:read"];
+  allowed_origins: string[];
+  rate_limit_per_minute: number;
+  created_at: string;
+  created_by: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  last_used_at: string | null;
+  last_origin: string | null;
+  request_count: number;
+  status: "active" | "expired" | "revoked";
+};
+
+export type IssuedIntegrationKey = { api_key: string; key: IntegrationKey };

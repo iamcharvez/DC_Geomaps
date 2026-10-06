@@ -7,10 +7,10 @@ It does **not** use `tile.openstreetmap.org`, does not write basemap data to Pos
 ## Architecture
 
 - **Web:** React 19 + MapLibre GL JS. The PMTiles renderer is loaded after login so the authentication screen stays small and fast.
-- **API:** Fastify/TypeScript. It mediates Keycloak direct grants, verifies signed access tokens with the realm's JWKS, and accepts only `role_dcgeomaps_admin`.
+- **API:** Fastify/TypeScript. It mediates Keycloak direct grants, verifies signed access tokens with the realm's JWKS, accepts only `role_dcgeomaps_admin` for administration, and manages hashed, revocable integration keys.
 - **Worker:** Private Python service with pinned Planetiler, pyosmium, osmium-tool, and PMTiles CLI versions. It owns resumable downloads, bounded retries, scheduling, resource preflight checks, locks, builds, validation, activation, rollback, rotated logs, and audit events.
 - **Caddy:** Serves the application and versioned archives with HTTP Range requests. The worker is not published to the host.
-- **Storage:** A dedicated `basemap_data` Docker volume containing public archives plus private PBF, cache, state, work, and logs. There is no application database.
+- **Storage:** A dedicated `basemap_data` Docker volume containing archives plus private PBF, cache, state, work, and logs. A separate `integration_data` volume stores hashed API-key records and usage counters. There is no application database.
 
 See [architecture](docs/architecture.md), [operations](docs/operations.md), [authentication](docs/authentication.md), the [external map integration guide](docs/integration.md), the [API reference](docs/api.md), and the [AI integration guide](docs/ai-integration.md).
 
@@ -29,9 +29,8 @@ Copy-Item .env.example .env
 
 Set at least:
 
-- `APP_ORIGIN` to the public DC Geomap origin. Keep `BASEMAP_ALLOWED_ORIGIN=*`
-  and `INTEGRATION_ALLOWED_ORIGIN=*` when several browser apps will consume the
-  public map, or set both to one exact consuming app origin.
+- `APP_ORIGIN` to the public DC Geomap origin. Browser origin restrictions are
+  configured separately for each generated integration key.
 - `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, and `KEYCLOAK_CLIENT_SECRET`.
 - `WORKER_SHARED_SECRET` to a random value of at least 32 characters.
 - `CADDY_SITE_ADDRESS` to a DNS name for automatic HTTPS in production.
@@ -50,8 +49,6 @@ WEB_BIND=0.0.0.0
 WEB_PORT=8180
 WEB_HTTPS_PORT=8443
 APP_ORIGIN=http://192.168.1.50:8180
-BASEMAP_ALLOWED_ORIGIN=*
-INTEGRATION_ALLOWED_ORIGIN=*
 ```
 
 Replace `192.168.1.50` with the server address, allow TCP 8180 through its
@@ -65,17 +62,19 @@ the public HTTPS hostname, not the local upstream address.
 
 ## Use the map in another project
 
-The public, read-only integration API does not require a Keycloak login. Once an
-archive is active, its discovery document and ready-to-use MapLibre style are:
+The read-only integration API uses revocable application keys instead of an
+administrator login. Generate one from the **Integrations** tab, then use it for:
 
 ```text
 GET http://192.168.1.50:8180/api/v1/integration
 GET http://192.168.1.50:8180/api/v1/integration/style.json
 ```
 
-The protected admin/build endpoints remain restricted to
-`role_dcgeomaps_admin`. See the [integration guide](docs/integration.md) for a
-React example and CORS configuration.
+Send the key in `X-API-Key`. The same header authorizes PMTiles HTTP Range
+requests. Keys support per-app origin policies, expiration, rotation, immediate
+revocation, rate limits, and usage counters. Protected admin/build endpoints
+remain restricted to `role_dcgeomaps_admin`. See the
+[integration guide](docs/integration.md) for a React example.
 
 ## Start without forcing a manual build
 

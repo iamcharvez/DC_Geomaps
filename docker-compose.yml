@@ -24,6 +24,9 @@ services:
       WORKER_URL: http://worker:8788
       WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:?Set WORKER_SHARED_SECRET}
       BASEMAP_MANIFEST_URL: ${BASEMAP_MANIFEST_URL:-/basemap/active.json}
+      INTEGRATION_DATA_PATH: /data/integration/keys.json
+    volumes:
+      - integration_data:/data/integration
     depends_on:
       worker:
         condition: service_healthy
@@ -81,9 +84,6 @@ services:
       dockerfile: infrastructure/docker/web.Dockerfile
     environment:
       CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
-      # These public, credential-free resources may be consumed by multiple apps.
-      BASEMAP_ALLOWED_ORIGIN: ${BASEMAP_ALLOWED_ORIGIN:-*}
-      INTEGRATION_ALLOWED_ORIGIN: ${INTEGRATION_ALLOWED_ORIGIN:-*}
     ports:
       # Either published host port can be changed without changing Caddy's
       # internal listeners. For example WEB_PORT=8180 publishes host 8180.
@@ -106,5 +106,6 @@ services:
 
 volumes:
   basemap_data:
+  integration_data:
   caddy_data:
   caddy_config:

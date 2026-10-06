@@ -1,6 +1,8 @@
 # HTTP API reference
 
-All JSON responses use UTF-8. Protected endpoints require `Authorization: Bearer <Keycloak access token>`. Errors use:
+All JSON responses use UTF-8. Administrative endpoints require
+`Authorization: Bearer <Keycloak access token>`. External map endpoints require
+`X-API-Key: <integration key>`. Errors use:
 
 ```json
 {"error":{"code":"machine_code","message":"Human-readable message"}}
@@ -8,10 +10,12 @@ All JSON responses use UTF-8. Protected endpoints require `Authorization: Bearer
 
 The worker API is intentionally undocumented as a public interface and is reachable only inside Compose.
 
-## Public map integration
+## Map integration
 
-These read-only endpoints do not require Keycloak authentication. Their CORS
-policy is independent of the protected administrative API.
+These read-only endpoints use application keys rather than Keycloak. Each key
+has a browser-origin policy, expiration, per-minute rate limit, revocation
+state, and usage counters. Discovery and style responses include
+`X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
 
 ### `GET /api/v1/integration`
 
@@ -57,6 +61,38 @@ Returns a MapLibre Style Specification v8 document whose vector source points
 to the immutable active archive using the `pmtiles://` protocol. The source has
 native `maxzoom: 15`; a MapLibre map may set `maxZoom: 22` for vector overzoom.
 Returns 503 with `basemap_not_ready` until the first archive is active.
+
+## Integration key administration
+
+All endpoints in this section require a Keycloak administrator token.
+
+### `GET /api/v1/integration/keys`
+
+Lists safe key metadata, status, origin policy, rate limit, expiration, last
+use, and request count. Stored hashes and plaintext secrets are never returned.
+
+### `POST /api/v1/integration/keys`
+
+```json
+{
+  "name": "DC Field Ops",
+  "allowed_origins": ["https://fieldops.example.com"],
+  "rate_limit_per_minute": 1200,
+  "expires_at": "2027-01-04T00:00:00.000Z"
+}
+```
+
+Returns HTTP 201 and the plaintext `api_key` exactly once. The only scope is
+`basemap:read`. Use `["*"]` only when any browser origin must be allowed.
+
+### `POST /api/v1/integration/keys/:id/revoke`
+
+Immediately prevents further discovery, style, manifest, and archive access.
+
+### `POST /api/v1/integration/keys/:id/rotate`
+
+Creates and returns a replacement secret with the same policy and immediately
+revokes the old key. The replacement secret is also displayed only once.
 
 ## Health and authentication
 
@@ -121,11 +157,12 @@ The following protected endpoints accept an empty POST body and return HTTP 202 
 
 Long operations continue in the worker. Poll status for progress. A conflicting operation returns 409. Cancellation is cooperative for downloads/checksums and terminates Planetiler, osmium, or PMTiles process groups when applicable.
 
-## Public basemap files
+## Protected basemap files
 
 ### `GET /basemap/active.json`
 
-No-cache discovery manifest:
+No-cache discovery manifest. Accepts an integration key or an administrator
+Keycloak bearer token:
 
 ```json
 {
@@ -142,8 +179,13 @@ No-cache discovery manifest:
 
 ### `GET /basemap/health.json`
 
-Safe serving status without paths, checksums, logs, or credentials.
+Safe serving status without paths, checksums, logs, or credentials. Requires the
+same authorization as the manifest.
 
 ### `GET|HEAD /basemap/philippines-<version>.pmtiles`
 
-Immutable PMTiles archive. Supports byte ranges, ETag, and Last-Modified through Caddy. Browser CORS uses `BASEMAP_ALLOWED_ORIGIN`; use `*` for multiple credential-free consumers or one exact origin for a single consumer. Directory listing is disabled.
+Immutable PMTiles archive. Caddy authorizes each request through the API and
+then serves the file directly with byte ranges, ETag, and Last-Modified. An
+integration key uses `X-API-Key`; the built-in preview uses its Keycloak bearer
+token. CORS echoes only an origin permitted by the authenticated key. Directory
+listing is disabled.

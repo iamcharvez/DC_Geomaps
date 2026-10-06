@@ -10,8 +10,6 @@ CADDY_SITE_ADDRESS=:80
 WEB_BIND=0.0.0.0
 WEB_PORT=8180
 APP_ORIGIN=http://server-address:8180
-BASEMAP_ALLOWED_ORIGIN=*
-INTEGRATION_ALLOWED_ORIGIN=*
 ```
 
 Do not change `CADDY_SITE_ADDRESS` to `:8180` for this arrangement: 8180 is the
@@ -52,7 +50,12 @@ Every accepted action and its terminal outcome is written to `/data/logs/audit.j
 
 ## Backup and recovery
 
-Back up the `basemap_data` volume while no update is running. At minimum retain `/data/public`, `/data/private/state.json`, and `/data/private/source/philippines.osm.pbf`. Planetiler cache can be recreated but avoiding that download speeds recovery.
+Back up the `basemap_data` volume while no update is running. At minimum retain
+`/data/public`, `/data/private/state.json`, and
+`/data/private/source/philippines.osm.pbf`. Planetiler cache can be recreated
+but avoiding that download speeds recovery. Back up the separate
+`integration_data` volume to preserve application-key hashes and usage history;
+lost plaintext keys cannot be reconstructed and must instead be rotated.
 
 To recover on a new host, restore the volume before starting Compose. If an interrupted job was recorded, the worker marks it failed, clears staging, and retains the last active manifest/archive.
 

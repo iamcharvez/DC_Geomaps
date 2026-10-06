@@ -55,6 +55,8 @@ export const api = {
     ),
   get: <T>(path: string, token: string) => request<T>(path, {}, token),
   post: <T>(path: string, token: string) => request<T>(path, { method: "POST", body: "{}" }, token),
+  send: <T>(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body: unknown, token: string) =>
+    request<T>(path, { method, body: JSON.stringify(body) }, token),
 };
 
 export function rememberRefresh(token?: string) {
@@ -65,4 +67,3 @@ export function rememberRefresh(token?: string) {
 export function savedRefresh() {
   return sessionStorage.getItem(refreshKey);
 }
-

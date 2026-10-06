@@ -1,4 +1,11 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import { timingSafeEqual } from "node:crypto";
+import {
+  ApiKeyError,
+  ApiKeyStore,
+  extractApiKey,
+  type PublicApiKey,
+} from "./api-key-store.js";
 import type { Config } from "./config.js";
 import {
   AuthError,
@@ -18,12 +25,19 @@ import { WorkerError, workerRequest } from "./worker-client.js";
 declare module "fastify" {
   interface FastifyRequest {
     admin?: AdminIdentity;
+    integrationKey?: PublicApiKey;
   }
 }
 
 type Credentials = { username?: unknown; password?: unknown };
 type RefreshBody = { refresh_token?: unknown };
 type LogoutBody = { access_token?: unknown; refresh_token?: unknown };
+type CreateKeyBody = {
+  name?: unknown;
+  allowed_origins?: unknown;
+  rate_limit_per_minute?: unknown;
+  expires_at?: unknown;
+};
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -34,6 +48,12 @@ function error(reply: FastifyReply, status: number, code: string, message: strin
 function bearer(request: FastifyRequest): string | null {
   const value = request.headers.authorization;
   return value?.startsWith("Bearer ") ? value.slice(7) : null;
+}
+
+function constantEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function checkLoginLimit(request: FastifyRequest): void {
@@ -50,9 +70,11 @@ function checkLoginLimit(request: FastifyRequest): void {
 
 export function buildApp(config: Config) {
   const app = Fastify({ logger: true, bodyLimit: 32 * 1024, trustProxy: false });
+  const keyStore = new ApiKeyStore(config.integrationDataPath);
 
   app.setErrorHandler((cause, _request, reply) => {
     if (cause instanceof AuthError) return error(reply, cause.status, cause.code, cause.message);
+    if (cause instanceof ApiKeyError) return error(reply, cause.status, cause.code, cause.message);
     if (cause instanceof WorkerError) return error(reply, cause.status, "worker_error", cause.message);
     app.log.error(cause);
     return error(reply, 500, "internal_error", "The request could not be completed.");
@@ -64,13 +86,52 @@ export function buildApp(config: Config) {
     request.admin = await verifyAdminToken(config, token);
   };
 
+  const authorizeApiKey = async (request: FastifyRequest, reply: FastifyReply) => {
+    const secret = extractApiKey(request.headers);
+    if (!secret) return error(reply, 401, "api_key_required", "Provide an integration API key in X-API-Key.");
+    const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+    const authorized = await keyStore.authenticate(secret, {
+      ...(origin ? { origin } : {}),
+      ip: request.ip,
+    });
+    request.integrationKey = authorized.key;
+    if (origin) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("access-control-expose-headers", "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset");
+      reply.header("vary", "Origin");
+    }
+    reply.header("x-ratelimit-limit", String(authorized.key.rate_limit_per_minute));
+    reply.header("x-ratelimit-remaining", String(authorized.remaining));
+    reply.header("x-ratelimit-reset", String(authorized.resetAt));
+  };
+
+  app.addHook("onClose", async () => keyStore.flush());
+
   app.get("/health", async () => ({ status: "ok", service: "dc-geomap-api" }));
-  app.get("/api/v1/integration", async (_request, reply) => {
+  app.get("/api/v1/integration/authorize", async (request, reply) => {
+    const workerSecret = request.headers["x-dcgeomap-worker-secret"];
+    if (typeof workerSecret === "string" && constantEqual(workerSecret, config.workerSharedSecret)) {
+      return reply.code(204).send();
+    }
+    const apiKey = extractApiKey(request.headers);
+    if (apiKey) {
+      await authorizeApiKey(request, reply);
+      return reply.code(204).send();
+    }
+    const token = bearer(request);
+    if (token) {
+      await verifyAdminToken(config, token);
+      return reply.code(204).send();
+    }
+    return error(reply, 401, "unauthenticated", "A Keycloak session or integration API key is required.");
+  });
+
+  app.get("/api/v1/integration", { preHandler: authorizeApiKey }, async (_request, reply) => {
     const status = await workerRequest<WorkerIntegrationStatus>(config, "/v1/status");
-    reply.header("cache-control", "public, max-age=30");
+    reply.header("cache-control", "private, max-age=30");
     return integrationDocument(config, status);
   });
-  app.get("/api/v1/integration/style.json", async (_request, reply) => {
+  app.get("/api/v1/integration/style.json", { preHandler: authorizeApiKey }, async (_request, reply) => {
     const status = await workerRequest<WorkerIntegrationStatus>(config, "/v1/status");
     const style = integrationStyle(config, status);
     if (!style) {
@@ -81,7 +142,7 @@ export function buildApp(config: Config) {
         "The first Philippines basemap build has not been published yet.",
       );
     }
-    reply.header("cache-control", "public, max-age=30");
+    reply.header("cache-control", "private, max-age=30");
     return style;
   });
   app.get("/api/v1/auth/config", async () => ({
@@ -133,6 +194,49 @@ export function buildApp(config: Config) {
     username: request.admin!.username,
     roles: request.admin!.roles,
   }));
+
+  app.get("/api/v1/integration/keys", { preHandler: requireAdmin }, async () => ({
+    keys: await keyStore.list(),
+  }));
+
+  app.post<{ Body: CreateKeyBody }>(
+    "/api/v1/integration/keys",
+    { preHandler: requireAdmin },
+    async (request, reply) => {
+      const name = typeof request.body?.name === "string" ? request.body.name : "";
+      const rate = request.body?.rate_limit_per_minute == null
+        ? undefined
+        : Number(request.body.rate_limit_per_minute);
+      const expiresAt = request.body?.expires_at == null || request.body.expires_at === ""
+        ? null
+        : typeof request.body.expires_at === "string" ? request.body.expires_at : "invalid";
+      const created = await keyStore.create({
+        name,
+        allowedOrigins: request.body?.allowed_origins,
+        ...(rate === undefined ? {} : { rateLimitPerMinute: rate }),
+        expiresAt,
+        actor: request.admin!.username,
+      });
+      reply.header("cache-control", "no-store");
+      return reply.code(201).send(created);
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/integration/keys/:id/revoke",
+    { preHandler: requireAdmin },
+    async (request) => ({ key: await keyStore.revoke(request.params.id, request.admin!.username) }),
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/integration/keys/:id/rotate",
+    { preHandler: requireAdmin },
+    async (request, reply) => {
+      const rotated = await keyStore.rotate(request.params.id, request.admin!.username);
+      reply.header("cache-control", "no-store");
+      return rotated;
+    },
+  );
 
   app.get("/api/v1/runtime-config", { preHandler: requireAdmin }, async () => ({
     basemap_manifest_url: config.basemapManifestUrl,

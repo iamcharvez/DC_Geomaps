@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
-import { Protocol } from "pmtiles";
+import { FetchSource, PMTiles, Protocol } from "pmtiles";
 import { basemapStyle } from "./basemap-style";
 import type { BasemapStatus, BasemapVersion } from "./types";
 
 const protocol = new Protocol();
 let registered = false;
 
-export function MapPreview({ active, job }: { active: BasemapVersion | null; job?: BasemapStatus["job"] }) {
+export function MapPreview({ active, job, token }: { active: BasemapVersion | null; job?: BasemapStatus["job"]; token: string }) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -18,6 +18,8 @@ export function MapPreview({ active, job }: { active: BasemapVersion | null; job
       maplibregl.addProtocol("pmtiles", protocol.tile);
       registered = true;
     }
+    const absoluteArchive = new URL(active.url, window.location.href).href;
+    protocol.add(new PMTiles(new FetchSource(absoluteArchive, new Headers({ authorization: `Bearer ${token}` }))));
     setWarning(null);
     const instance = new maplibregl.Map({
       container: container.current,
@@ -41,7 +43,7 @@ export function MapPreview({ active, job }: { active: BasemapVersion | null; job
       instance.remove();
       map.current = null;
     };
-  }, [active?.url]);
+  }, [active?.url, token]);
 
   if (!active) {
     const building = job && job.status !== "idle";

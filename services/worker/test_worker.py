@@ -126,6 +126,20 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(opened.call_count, 2)
             self.assertEqual(destination.read_bytes(), payload)
 
+    def test_caddy_range_validation_uses_private_worker_secret(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = BasemapController(settings(Path(directory)))
+            response = FakeResponse(
+                b"x" * 127,
+                206,
+                {"Content-Range": "bytes 0-126/4096"},
+            )
+            with patch("worker.urllib.request.urlopen", return_value=response) as opened:
+                controller._range_test("philippines-test.pmtiles")
+            request = opened.call_args.args[0]
+            self.assertEqual(request.get_header("Range"), "bytes=0-126")
+            self.assertEqual(request.get_header("X-dcgeomap-worker-secret"), "x" * 32)
+
     def test_scheduled_failure_creates_bounded_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             controller = BasemapController(settings(Path(directory)))

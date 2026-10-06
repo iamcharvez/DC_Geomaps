@@ -10,6 +10,7 @@ export type Config = {
   workerUrl: string;
   workerSharedSecret: string;
   basemapManifestUrl: string;
+  integrationDataPath: string;
 };
 
 function required(name: string, source = process.env): string {
@@ -47,6 +48,6 @@ export function loadConfig(source = process.env): Config {
     workerUrl: (source.WORKER_URL?.trim() || "http://127.0.0.1:8788").replace(/\/$/, ""),
     workerSharedSecret: secret,
     basemapManifestUrl: source.BASEMAP_MANIFEST_URL?.trim() || "/basemap/active.json",
+    integrationDataPath: source.INTEGRATION_DATA_PATH?.trim() || "/data/integration/keys.json",
   };
 }
-

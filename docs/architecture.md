@@ -15,9 +15,13 @@
 ## Isolation and trust boundaries
 
 - Only Caddy is published. The API and worker are reachable on the private Compose network.
-- Caddy exposes only the versioned, read-only `/api/v1/integration` contract,
-  its generated MapLibre style, manifests, and immutable PMTiles archives to
-  consuming applications. The contract is sanitized before it leaves the API.
+- Caddy exposes the versioned, read-only `/api/v1/integration` contract, its
+  generated MapLibre style, manifests, and immutable PMTiles archives only
+  after API-key, Keycloak administrator, or private worker authorization. The
+  public contract is sanitized before it leaves the API.
+- Integration secrets are displayed once and only SHA-256 hashes are persisted
+  in the separate `integration_data` volume. Each key has an origin policy,
+  expiration, rate limit, revocation state, and usage counters.
 - The worker accepts a shared bearer secret from the API, but the browser never receives it.
 - Every browser control request carries a signed Keycloak access token. The API verifies its signature with the realm's cached JWKS, then checks its issuer, expiry, issuing client, and exact administrator role before proxying to the worker. An unknown signing key triggers an immediate JWKS refresh for safe Keycloak key rotation.
 - The worker runs tools as UID/GID 10001 after a minimal root entrypoint prepares the Docker volume.

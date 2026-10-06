@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { ApiKeyStore } from "./api-key-store.js";
 import { buildApp } from "./app.js";
 import type { Config } from "./config.js";
 import { integrationDocument, integrationStyle, type WorkerIntegrationStatus } from "./integration.js";
@@ -16,6 +20,7 @@ const config: Config = {
   workerUrl: "http://worker:8788",
   workerSharedSecret: "x".repeat(32),
   basemapManifestUrl: "/basemap/active.json",
+  integrationDataPath: "/tmp/dc-geomap-test-keys.json",
 };
 
 const ready: WorkerIntegrationStatus = {
@@ -66,8 +71,50 @@ test("does not publish a style before the first archive is active", () => {
   assert.equal(integrationStyle(config, waiting), null);
 });
 
-test("serves discovery without an administrator token", async () => {
+test("requires an API key for external discovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dc-geomap-integration-"));
+  const app = buildApp({ ...config, integrationDataPath: join(directory, "keys.json") });
+  try {
+    const response = await app.inject({ method: "GET", url: "/api/v1/integration" });
+    assert.equal(response.statusCode, 401);
+    assert.equal(response.json().error.code, "api_key_required");
+  } finally {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("allows the worker secret only through the internal authorization endpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dc-geomap-integration-"));
+  const app = buildApp({ ...config, integrationDataPath: join(directory, "keys.json") });
+  try {
+    const accepted = await app.inject({
+      method: "GET",
+      url: "/api/v1/integration/authorize",
+      headers: { "x-dcgeomap-worker-secret": config.workerSharedSecret },
+    });
+    assert.equal(accepted.statusCode, 204);
+    const rejected = await app.inject({
+      method: "GET",
+      url: "/api/v1/integration/authorize",
+      headers: { "x-dcgeomap-worker-secret": "wrong" },
+    });
+    assert.equal(rejected.statusCode, 401);
+  } finally {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("serves discovery with an integration key and no administrator token", async () => {
   const originalFetch = globalThis.fetch;
+  const directory = await mkdtemp(join(tmpdir(), "dc-geomap-integration-"));
+  const testConfig = { ...config, integrationDataPath: join(directory, "keys.json") };
+  const issued = await new ApiKeyStore(testConfig.integrationDataPath).create({
+    name: "Field Ops",
+    allowedOrigins: ["https://field.example.test"],
+    actor: "admin",
+  });
   globalThis.fetch = async (input) => {
     assert.equal(String(input), "http://worker:8788/v1/status");
     return new Response(JSON.stringify(ready), {
@@ -75,32 +122,46 @@ test("serves discovery without an administrator token", async () => {
       headers: { "content-type": "application/json" },
     });
   };
-  const app = buildApp(config);
+  const app = buildApp(testConfig);
   try {
-    const response = await app.inject({ method: "GET", url: "/api/v1/integration" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/integration",
+      headers: { "x-api-key": issued.api_key, origin: "https://field.example.test" },
+    });
     assert.equal(response.statusCode, 200);
-    assert.equal(response.headers["cache-control"], "public, max-age=30");
+    assert.equal(response.headers["cache-control"], "private, max-age=30");
+    assert.equal(response.headers["access-control-allow-origin"], "https://field.example.test");
     assert.equal(response.json().active.version, "2026-10-06-abc123");
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("returns a clear 503 style response before initial publication", async () => {
   const originalFetch = globalThis.fetch;
+  const directory = await mkdtemp(join(tmpdir(), "dc-geomap-integration-"));
+  const testConfig = { ...config, integrationDataPath: join(directory, "keys.json") };
+  const issued = await new ApiKeyStore(testConfig.integrationDataPath).create({ name: "Test", actor: "admin" });
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ active: null, job: { status: "idle" } }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  const app = buildApp(config);
+  const app = buildApp(testConfig);
   try {
-    const response = await app.inject({ method: "GET", url: "/api/v1/integration/style.json" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/integration/style.json",
+      headers: { "x-api-key": issued.api_key },
+    });
     assert.equal(response.statusCode, 503);
     assert.equal(response.json().error.code, "basemap_not_ready");
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });

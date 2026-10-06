@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { Integrations } from "./Integrations";
 import type { AuditEvent, BasemapStatus, User } from "./types";
 
 const MapPreview = lazy(() =>
@@ -68,7 +69,7 @@ export function Dashboard({
   const [status, setStatus] = useState<BasemapStatus | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
-  const [tab, setTab] = useState<"overview" | "logs" | "audit">("overview");
+  const [tab, setTab] = useState<"overview" | "logs" | "audit" | "integrations">("overview");
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<string | null>(null);
 
@@ -143,6 +144,7 @@ export function Dashboard({
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
           <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Build logs</button>
           <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>Audit</button>
+          <button className={tab === "integrations" ? "active" : ""} onClick={() => setTab("integrations")}>Integrations</button>
         </nav>
         <div className="operator">
           <span className="avatar">{initials}</span>
@@ -182,7 +184,7 @@ export function Dashboard({
               <article className="panel map-panel">
                 <header><div><p className="eyebrow">LIVE ARCHIVE</p><h2>Philippines coverage</h2></div><span className="coordinate">122.2° E · 12.4° N</span></header>
                 <Suspense fallback={<div className="map-empty"><p>Loading map renderer…</p></div>}>
-                  <MapPreview active={status?.active ?? null} job={status?.job} />
+                  <MapPreview active={status?.active ?? null} job={status?.job} token={token} />
                 </Suspense>
               </article>
 
@@ -277,6 +279,8 @@ export function Dashboard({
             </div>
           </section>
         )}
+
+        {tab === "integrations" && <Integrations token={token} />}
       </main>
     </div>
   );

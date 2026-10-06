@@ -22,6 +22,7 @@ const config: Config = {
   workerUrl: "http://worker:8788",
   workerSharedSecret: "x".repeat(32),
   basemapManifestUrl: "/basemap/active.json",
+  integrationDataPath: "/tmp/dc-geomap-test-keys.json",
 };
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });

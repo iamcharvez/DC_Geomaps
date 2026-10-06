@@ -1019,7 +1019,11 @@ class BasemapController:
         self._job(stage="range-test", progress=94, message="Testing Caddy HTTP Range support")
         request = urllib.request.Request(
             f"{self.settings.caddy_url}/basemap/{filename}",
-            headers={"Range": "bytes=0-126", "User-Agent": "DC-Geomap-Validator/0.1"},
+            headers={
+                "Range": "bytes=0-126",
+                "User-Agent": "DC-Geomap-Validator/0.1",
+                "X-DCGeomap-Worker-Secret": self.settings.shared_secret,
+            },
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = response.read()
